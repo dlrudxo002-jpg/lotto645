@@ -86,5 +86,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git add lotto645_전체.csv
           git diff --staged --quiet && echo "추가 없음, 커밋 스킵" && exit 0
-          git commit -m "자동 수집: ${{ env.ADDED_COUNT }}회차 추가 [skip ci]"
+          git commit -m "자동 수집: ${{ env.ADDED_COUNT }}회차 추가"
           git push
