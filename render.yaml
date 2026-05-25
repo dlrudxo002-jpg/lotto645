@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: lotto645
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
+    envVars:
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: SAVE_TOKEN
+        sync: false

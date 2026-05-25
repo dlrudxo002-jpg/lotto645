@@ -1,0 +1,90 @@
+name: 로또 최신 수집
+
+on:
+  schedule:
+    - cron: '0 12 * * 0'  # 매주 일요일 21:00 KST (UTC 12:00)
+  workflow_dispatch:       # 수동/버튼 트리거
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 최신 회차 수집 및 CSV 업데이트
+        run: |
+          python3 - <<'EOF'
+          import urllib.request, urllib.parse, json, os, re, csv
+
+          CSV_PATH = 'lotto645_전체.csv'
+
+          def fetch_naver(rnd):
+              query = urllib.parse.quote(f'로또 {rnd}회')
+              url   = f'https://search.naver.com/search.naver?query={query}'
+              req   = urllib.request.Request(url, headers={
+                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+                  'Accept-Language': 'ko-KR,ko;q=0.9'
+              })
+              with urllib.request.urlopen(req, timeout=10) as r:
+                  html = r.read().decode('utf-8', errors='ignore')
+              if f'data-kgs-option="{rnd}" aria-selected="true"' not in html:
+                  return None
+              win_idx = html.find('win_number_box')
+              if win_idx < 0:
+                  return None
+              section = html[win_idx:win_idx + 800]
+              balls   = re.findall(r'class="ball type\d+">(\d+)<', section)
+              if len(balls) < 7:
+                  return None
+              nums  = sorted([int(x) for x in balls[:6]])
+              bonus = int(balls[6])
+              m     = re.search(rf'{rnd}회차 \((\d{{4}}\.\d{{2}}\.\d{{2}})\.\)', html)
+              date  = m.group(1).replace('.', '-') if m else ''
+              return nums, bonus, date
+
+          # 현재 CSV 마지막 회차 확인
+          with open(CSV_PATH, encoding='utf-8') as f:
+              rows = list(csv.DictReader(f))
+          last_rnd = int(rows[-1]['회차'])
+          print(f'현재 DB 최신: {last_rnd}회')
+
+          # 새 회차 수집
+          added = 0
+          rnd   = last_rnd + 1
+          with open(CSV_PATH, 'a', encoding='utf-8', newline='') as f:
+              writer = csv.writer(f)
+              while True:
+                  try:
+                      result = fetch_naver(rnd)
+                  except Exception as e:
+                      print(f'{rnd}회 조회 실패: {e}')
+                      break
+                  if not result:
+                      print(f'{rnd}회 아직 미발표')
+                      break
+                  nums, bonus, date = result
+                  writer.writerow([rnd] + nums + [bonus])
+                  print(f'✓ {rnd}회: {nums} 보너스 {bonus} ({date})')
+                  added += 1
+                  rnd  += 1
+
+          print(f'완료: {added}회차 추가')
+
+          # GitHub Actions 환경변수로 결과 전달
+          with open(os.environ.get('GITHUB_ENV', '/dev/null'), 'a') as f:
+              f.write(f'ADDED_COUNT={added}\n')
+          EOF
+
+      - name: 변경사항 커밋 및 푸시
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add lotto645_전체.csv
+          git diff --staged --quiet && echo "추가 없음, 커밋 스킵" && exit 0
+          git commit -m "자동 수집: ${{ env.ADDED_COUNT }}회차 추가 [skip ci]"
+          git push

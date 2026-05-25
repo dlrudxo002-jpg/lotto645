@@ -1,0 +1,1236 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NOGO 로또 645분석</title>
+<style>
+:root {
+  --bg: #0f1117; --card: #1a1d27; --card2: #21253a;
+  --accent: #4f8ef7; --accent2: #7c3aed;
+  --green: #22c55e; --yellow: #f59e0b; --red: #ef4444;
+  --text: #e2e8f0; --muted: #64748b; --border: #2d3148;
+  --nav-h: 56px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif; min-height: 100vh; }
+
+/* Header */
+.header { background: var(--card); border-bottom: 1px solid var(--border); padding: 14px 20px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.logo { font-size: 1.2rem; font-weight: 700; color: var(--accent); }
+.status-bar { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.stat { font-size: .85rem; color: var(--muted); }
+.stat span { color: var(--text); font-weight: 600; }
+.btn { padding: 8px 18px; border: none; border-radius: 8px; cursor: pointer; font-size: .88rem; font-weight: 600; transition: .15s; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: #3b7de8; }
+.btn-green { background: var(--green); color: #fff; }
+.btn-green:hover { background: #16a34a; }
+.btn-sm { padding: 5px 12px; font-size: .8rem; }
+.btn-outline { background: transparent; border: 1px solid var(--border); color: var(--muted); }
+.btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* Layout */
+.container { display: grid; grid-template-columns: 340px 1fr; gap: 0; height: calc(100vh - 57px); }
+.sidebar { background: var(--card); border-right: 1px solid var(--border); overflow-y: auto; }
+.main { overflow-y: auto; padding: 20px; }
+
+/* Number Pool */
+.section { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.section-title { font-size: .78rem; font-weight: 700; color: var(--muted); text-transform: uppercase;
+  letter-spacing: .06em; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+.num-grid { display: grid; grid-template-columns: repeat(9, 1fr); gap: 4px; }
+.num-btn { aspect-ratio: 1; border: none; border-radius: 6px; font-size: .78rem; font-weight: 700;
+  cursor: pointer; transition: .12s; background: var(--card2); color: var(--muted); }
+.num-btn.recommended { background: rgba(79,142,247,.18); color: var(--accent); border: 1px solid rgba(79,142,247,.4); }
+.num-btn.selected { background: var(--accent); color: #fff; border: 1px solid var(--accent); }
+.num-btn.overdue { background: rgba(239,68,68,.18); color: var(--red); border: 1px solid rgba(239,68,68,.3); }
+.num-btn.overdue.selected { background: var(--red); color: #fff; }
+.num-btn:hover { transform: scale(1.1); }
+.pool-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.badge { padding: 3px 8px; border-radius: 20px; font-size: .75rem; font-weight: 700;
+  background: var(--accent); color: #fff; cursor: pointer; }
+.badge:hover { opacity: .8; }
+.pool-info { font-size: .78rem; color: var(--muted); margin-top: 6px; }
+
+/* Filters */
+.filter-block { border-bottom: 1px solid var(--border); }
+.filter-header { padding: 10px 16px; display: flex; align-items: center; gap: 8px; cursor: pointer;
+  user-select: none; }
+.filter-header:hover { background: rgba(255,255,255,.03); }
+.filter-header label { font-size: .88rem; font-weight: 600; cursor: pointer; flex: 1; }
+.filter-body { padding: 6px 16px 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+.filter-body.hidden { display: none; }
+.fc { display: flex; align-items: center; gap: 4px; font-size: .82rem; color: var(--muted);
+  cursor: pointer; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border);
+  transition: .1s; white-space: nowrap; }
+.fc:hover { border-color: var(--accent); color: var(--accent); }
+.fc input[type=checkbox] { accent-color: var(--accent); width: 13px; height: 13px; }
+.fc.checked { border-color: var(--accent); color: var(--accent); background: rgba(79,142,247,.1); }
+.range-row { display: flex; align-items: center; gap: 8px; font-size: .82rem; padding: 4px 0; }
+.range-row select { background: var(--card2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 8px; font-size: .82rem; }
+
+/* Game Count */
+.count-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.count-btn { padding: 7px 14px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--card2); color: var(--muted); cursor: pointer; font-size: .83rem; font-weight: 600; transition: .12s; }
+.count-btn:hover, .count-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* Main Content */
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+.card-title { font-size: .9rem; font-weight: 700; color: var(--muted); margin-bottom: 14px;
+  display: flex; justify-content: space-between; align-items: center; }
+.results-header { display: grid; grid-template-columns: 40px 1fr 60px 50px 40px 50px 55px; gap: 8px;
+  font-size: .75rem; color: var(--muted); padding: 0 12px 8px; border-bottom: 1px solid var(--border); }
+.result-row { display: grid; grid-template-columns: 40px 1fr 60px 50px 40px 50px 55px; gap: 8px;
+  padding: 9px 12px; border-radius: 8px; align-items: center; transition: .1s; }
+.result-row:hover { background: rgba(255,255,255,.04); }
+.result-row .nums { display: flex; gap: 4px; flex-wrap: wrap; }
+.ball { width: 28px; height: 28px; border-radius: 50%; display: inline-flex; align-items: center;
+  justify-content: center; font-size: .75rem; font-weight: 800; flex-shrink: 0; }
+.b1  { background:#e11d48; color:#fff; }
+.b10 { background:#f97316; color:#fff; }
+.b20 { background:#eab308; color:#000; }
+.b30 { background:#22c55e; color:#fff; }
+.b40 { background:#3b82f6; color:#fff; }
+.stat-val { font-size: .8rem; color: var(--muted); text-align: center; }
+
+/* Summary */
+.summary-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
+.summary-card { background: var(--card2); border-radius: 10px; padding: 14px; text-align: center; }
+.summary-num { font-size: 1.5rem; font-weight: 800; color: var(--accent); }
+.summary-label { font-size: .75rem; color: var(--muted); margin-top: 2px; }
+
+/* Toast */
+.toast { position: fixed; bottom: 24px; right: 24px; background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 20px; font-size: .88rem; z-index: 999;
+  transform: translateY(80px); opacity: 0; transition: .3s; }
+.toast.show { transform: translateY(0); opacity: 1; }
+.toast.success { border-color: var(--green); color: var(--green); }
+.toast.error { border-color: var(--red); color: var(--red); }
+
+/* 확인 모달 */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.75); z-index: 1000;
+  display: flex; align-items: center; justify-content: center; padding: 20px; }
+.modal-overlay.hidden { display: none; }
+.modal { background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+  padding: 28px 32px; max-width: 480px; width: 100%; text-align: center; }
+.modal-title { font-size: 1.1rem; font-weight: 800; margin-bottom: 6px; }
+.modal-sub { font-size: .82rem; color: var(--muted); margin-bottom: 20px; }
+.modal-round { font-size: 1.8rem; font-weight: 900; color: var(--accent); margin-bottom: 8px; }
+.modal-nums { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+.modal-step { display: flex; gap: 8px; justify-content: center; margin-bottom: 18px; }
+.step-dot { width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--border);
+  display: flex; align-items: center; justify-content: center; font-size: .75rem; font-weight: 700;
+  color: var(--muted); transition: .3s; }
+.step-dot.done { background: var(--green); border-color: var(--green); color: #fff; }
+.step-dot.active { border-color: var(--accent); color: var(--accent); animation: pulse 1s infinite; }
+@keyframes pulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.1)} }
+.modal-progress { font-size: .88rem; color: var(--muted); margin-bottom: 20px; }
+.modal-progress span { color: var(--accent); font-weight: 700; }
+.btn-cancel-modal { width: 100%; padding: 10px; font-size: .88rem; background: transparent;
+  border: 1px solid var(--border); color: var(--muted); border-radius: 10px; cursor: pointer; }
+.btn-cancel-modal:hover { border-color: var(--red); color: var(--red); }
+
+/* History */
+.hist-row { padding: 10px 12px; border-radius: 8px; margin-bottom: 6px; background: var(--card2);
+  font-size: .82rem; }
+.grade-1등 { color: #ffd700; font-weight: 800; }
+.grade-2등 { color: #c0c0c0; font-weight: 700; }
+.grade-3등 { color: #cd7f32; font-weight: 700; }
+.grade-4등 { color: var(--green); }
+.grade-5등 { color: var(--accent); }
+.grade-낙첨 { color: var(--muted); }
+
+/* Tabs */
+.tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+.tab { padding: 8px 20px; border-radius: 8px; cursor: pointer; font-size: .88rem; font-weight: 600;
+  color: var(--muted); border: 1px solid transparent; transition: .12s; }
+.tab:hover { color: var(--text); }
+.tab.active { background: var(--accent); color: #fff; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* Overdue bar */
+.overdue-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.overdue-label { font-size: .82rem; width: 40px; text-align: right; }
+.bar-track { flex: 1; height: 8px; background: var(--card2); border-radius: 4px; }
+.bar-fill { height: 8px; border-radius: 4px; background: var(--accent); transition: .5s; }
+.bar-fill.high { background: var(--red); }
+.overdue-val { font-size: .78rem; color: var(--muted); width: 36px; }
+
+/* ──────────────────────────────────────────────────────────────
+   MOBILE ONLY
+   ────────────────────────────────────────────────────────────── */
+.mobile-nav { display: none; }
+
+@media (max-width: 768px) {
+  /* Header: compact, wrap */
+  .header { padding: 10px 12px; gap: 8px; }
+  .logo { font-size: 1rem; }
+  .status-bar { gap: 10px; font-size: .78rem; }
+  .header > div:last-child > span { display: none; } /* hide motto on very small */
+
+  /* Body layout: full-screen panels */
+  .container {
+    display: block;
+    height: auto;
+    padding-bottom: var(--nav-h);
+  }
+
+  /* Sidebar = panel hidden by default, shown when active */
+  .sidebar {
+    display: none;
+    width: 100%;
+    height: calc(100vh - 57px - var(--nav-h));
+    overflow-y: auto;
+    border-right: none;
+  }
+  .sidebar.mob-active { display: block; }
+
+  /* Main = panel hidden by default */
+  .main {
+    display: none;
+    width: 100%;
+    min-height: calc(100vh - 57px - var(--nav-h));
+    padding: 12px;
+  }
+  .main.mob-active { display: block; }
+
+  /* Num grid larger touch targets */
+  .num-grid { grid-template-columns: repeat(9, 1fr); gap: 5px; }
+  .num-btn { min-height: 34px; font-size: .82rem; }
+  .num-btn:hover { transform: none; }
+
+  /* Filter touch targets */
+  .filter-header { padding: 12px 16px; min-height: 48px; }
+  .filter-header label { font-size: .92rem; }
+  .fc { min-height: 38px; font-size: .85rem; padding: 6px 10px; }
+  .count-btn { min-height: 40px; padding: 8px 14px; }
+
+  /* Results on mobile: 2줄 레이아웃 */
+  .results-header { display: none; }
+  .result-row {
+    display: block !important;
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(45,49,72,.5);
+    border-radius: 0;
+  }
+  .result-row .mob-top {
+    display: flex; align-items: center; gap: 6px; margin-bottom: 5px;
+  }
+  .result-row .mob-idx {
+    font-size: .72rem; color: var(--muted); width: 20px; flex-shrink: 0; text-align: center;
+  }
+  .result-row .mob-balls {
+    display: flex; gap: 5px; flex-wrap: nowrap;
+  }
+  .result-row .mob-balls .ball {
+    width: 32px; height: 32px; font-size: .78rem;
+  }
+  .result-row .mob-stats {
+    font-size: .72rem; color: var(--muted); padding-left: 26px; line-height: 1.6;
+  }
+  .result-row .mob-stats b { color: var(--text); font-weight: 600; }
+
+  /* Tabs scroll on mobile */
+  .tabs { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 4px; }
+  .tab { white-space: nowrap; padding: 8px 14px; font-size: .82rem; }
+
+  /* Generate button large */
+  .btn-green[onclick="generate()"] { padding: 14px; font-size: 1rem; }
+
+  /* Toast above nav */
+  .toast { bottom: calc(var(--nav-h) + 12px); right: 12px; left: 12px;
+    right: 12px; text-align: center; transform: translateY(40px); }
+  .toast.show { transform: translateY(0); }
+
+  /* Mobile bottom nav */
+  .mobile-nav {
+    display: flex;
+    position: fixed; bottom: 0; left: 0; right: 0;
+    height: var(--nav-h);
+    background: var(--card); border-top: 1px solid var(--border);
+    z-index: 500;
+  }
+  .mnav-btn {
+    flex: 1; border: none; background: transparent; color: var(--muted);
+    cursor: pointer; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 2px; font-size: .62rem; font-weight: 600; transition: .15s; padding: 4px 0;
+  }
+  .mnav-btn .ico { font-size: 1.2rem; line-height: 1; }
+  .mnav-btn.active { color: var(--accent); }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">🎰 NOGO 로또 645분석</div>
+  <div class="status-bar">
+    <div class="stat">최신: <span id="hd-round">-</span>회</div>
+    <div class="stat">당첨: <span id="hd-nums">-</span></div>
+    <div class="stat">데이터: <span id="hd-total">-</span>회</div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center">
+    <span style="color:#f59e0b;font-size:1rem;font-weight:700;">NOGO 꾸러기들 부우자되세요~</span>
+    <button class="btn btn-primary btn-sm" onclick="fetchLatest()">🔄 최신수집</button>
+    <button class="btn btn-sm" style="background:var(--yellow);color:#000;font-weight:700" onclick="openManualModal()">✏️ 수동입력</button>
+    <button class="btn btn-outline btn-sm" onclick="showTab('history')">📋 이력</button>
+  </div>
+</div>
+
+<div class="container">
+<!-- ─── SIDEBAR ──────────────────────────────────────────── -->
+<div class="sidebar" id="sidebar">
+
+  <!-- 번호 선택 -->
+  <div class="section">
+    <div class="section-title">
+      <span style="color:var(--text);font-size:.9rem;font-weight:700;">번호 선택</span>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-sm" style="background:var(--accent);color:#fff;" onclick="selectPool()">추천만</button>
+        <button class="btn btn-sm" style="background:var(--red);color:#fff;" onclick="clearPool()">초기화</button>
+      </div>
+    </div>
+    <div class="num-grid" id="num-grid"></div>
+    <div class="pool-info" id="pool-info">선택: 0개</div>
+    <div class="pool-badges" id="pool-badges"></div>
+  </div>
+
+  <!-- 필터 -->
+  <div class="filter-block">
+    <div class="filter-header" onclick="toggleFilter('f-odd')">
+      <input type="checkbox" id="en-odd" checked onclick="event.stopPropagation()">
+      <label for="en-odd">홀 : 짝 비율 포함</label> <span>▾</span>
+    </div>
+    <div class="filter-body" id="f-odd">
+      <label class="fc"><input type="checkbox" name="odd" value="0"> 0:6</label>
+      <label class="fc"><input type="checkbox" name="odd" value="1" checked> 1:5</label>
+      <label class="fc"><input type="checkbox" name="odd" value="2" checked> 2:4</label>
+      <label class="fc"><input type="checkbox" name="odd" value="3" checked> 3:3</label>
+      <label class="fc"><input type="checkbox" name="odd" value="4" checked> 4:2</label>
+      <label class="fc"><input type="checkbox" name="odd" value="5" checked> 5:1</label>
+      <label class="fc"><input type="checkbox" name="odd" value="6"> 6:0</label>
+    </div>
+  </div>
+
+  <div class="filter-block">
+    <div class="filter-header" onclick="toggleFilter('f-hi')">
+      <input type="checkbox" id="en-hi" checked onclick="event.stopPropagation()">
+      <label for="en-hi">고 : 저 비율 포함</label> <span>▾</span>
+    </div>
+    <div class="filter-body" id="f-hi">
+      <label class="fc"><input type="checkbox" name="hi" value="0"> 0:6</label>
+      <label class="fc"><input type="checkbox" name="hi" value="1" checked> 1:5</label>
+      <label class="fc"><input type="checkbox" name="hi" value="2" checked> 2:4</label>
+      <label class="fc"><input type="checkbox" name="hi" value="3" checked> 3:3</label>
+      <label class="fc"><input type="checkbox" name="hi" value="4" checked> 4:2</label>
+      <label class="fc"><input type="checkbox" name="hi" value="5" checked> 5:1</label>
+      <label class="fc"><input type="checkbox" name="hi" value="6"> 6:0</label>
+    </div>
+  </div>
+
+  <div class="filter-block">
+    <div class="filter-header" onclick="toggleFilter('f-sum')">
+      <input type="checkbox" id="en-sum" checked onclick="event.stopPropagation()">
+      <label for="en-sum">번호 총합 구간</label> <span>▾</span>
+    </div>
+    <div class="filter-body" id="f-sum">
+      <div class="range-row">
+        총합 범위: <select id="sum-lo"></select> 부터 <select id="sum-hi"></select> 까지
+      </div>
+    </div>
+  </div>
+
+  <div class="filter-block">
+    <div class="filter-header" onclick="toggleFilter('f-esum')">
+      <input type="checkbox" id="en-esum" checked onclick="event.stopPropagation()">
+      <label for="en-esum">끝수 총합 구간</label> <span>▾</span>
+    </div>
+    <div class="filter-body" id="f-esum">
+      <div class="range-row">
+        끝수 합 범위: <select id="esum-lo"></select> 부터 <select id="esum-hi"></select> 까지
+      </div>
+    </div>
+  </div>
+
+  <div class="filter-block">
+    <div class="filter-header" onclick="toggleFilter('f-end')">
+      <input type="checkbox" id="en-end" checked onclick="event.stopPropagation()">
+      <label for="en-end">같은 끝수 포함</label> <span>▾</span>
+    </div>
+    <div class="filter-body" id="f-end">
+      <label class="fc"><input type="checkbox" name="end" value="none" checked> 없음</label>
+      <label class="fc"><input type="checkbox" name="end" value="2" checked> 2개</label>
+      <label class="fc"><input type="checkbox" name="end" value="3"> 3개</label>
+      <label class="fc"><input type="checkbox" name="end" value="4"> 4개</label>
+      <label class="fc"><input type="checkbox" name="end" value="2pair2" checked> 2쌍2</label>
+      <label class="fc"><input type="checkbox" name="end" value="2pair3"> 2쌍3</label>
+    </div>
+  </div>
+
+  <div class="filter-block">
+    <div class="filter-header" onclick="toggleFilter('f-zone')">
+      <input type="checkbox" id="en-zone" checked onclick="event.stopPropagation()">
+      <label for="en-zone">동일구간 포함</label> <span>▾</span>
+    </div>
+    <div class="filter-body" id="f-zone">
+      <label class="fc"><input type="checkbox" name="zone" value="1"> 1개</label>
+      <label class="fc"><input type="checkbox" name="zone" value="2" checked> 2개</label>
+      <label class="fc"><input type="checkbox" name="zone" value="3" checked> 3개</label>
+      <label class="fc"><input type="checkbox" name="zone" value="4"> 4개</label>
+      <label class="fc"><input type="checkbox" name="zone" value="5"> 5개</label>
+    </div>
+  </div>
+
+  <div class="filter-block">
+    <div class="filter-header" onclick="toggleFilter('f-consec')">
+      <input type="checkbox" id="en-consec" checked onclick="event.stopPropagation()">
+      <label for="en-consec">연속번호 포함</label> <span>▾</span>
+    </div>
+    <div class="filter-body" id="f-consec">
+      <label class="fc"><input type="checkbox" name="consec" value="none" checked> 연번 없음</label>
+      <label class="fc"><input type="checkbox" name="consec" value="2x1" checked> 2연번(1쌍)</label>
+      <label class="fc"><input type="checkbox" name="consec" value="2x2"> 2연번(2쌍)</label>
+      <label class="fc"><input type="checkbox" name="consec" value="3x1"> 3연번(1쌍)</label>
+    </div>
+  </div>
+
+  <div class="filter-block">
+    <div class="filter-header" onclick="toggleFilter('f-prime')">
+      <input type="checkbox" id="en-prime" checked onclick="event.stopPropagation()">
+      <label for="en-prime">소수 포함</label> <span>▾</span>
+    </div>
+    <div class="filter-body" id="f-prime">
+      <label class="fc"><input type="checkbox" name="prime" value="0" checked> 0개</label>
+      <label class="fc"><input type="checkbox" name="prime" value="1" checked> 1개</label>
+      <label class="fc"><input type="checkbox" name="prime" value="2" checked> 2개</label>
+      <label class="fc"><input type="checkbox" name="prime" value="3" checked> 3개</label>
+      <label class="fc"><input type="checkbox" name="prime" value="4"> 4개</label>
+      <label class="fc"><input type="checkbox" name="prime" value="5"> 5개</label>
+    </div>
+  </div>
+
+  <div class="filter-block">
+    <div class="filter-header" onclick="toggleFilter('f-sq')">
+      <input type="checkbox" id="en-sq" checked onclick="event.stopPropagation()">
+      <label for="en-sq">제곱수 포함</label> <span>▾</span>
+    </div>
+    <div class="filter-body" id="f-sq">
+      <label class="fc"><input type="checkbox" name="sq" value="0" checked> 0개</label>
+      <label class="fc"><input type="checkbox" name="sq" value="1" checked> 1개</label>
+      <label class="fc"><input type="checkbox" name="sq" value="2" checked> 2개</label>
+      <label class="fc"><input type="checkbox" name="sq" value="3"> 3개</label>
+    </div>
+  </div>
+
+  <div class="filter-block">
+    <div class="filter-header" onclick="toggleFilter('f-comp')">
+      <input type="checkbox" id="en-comp" checked onclick="event.stopPropagation()">
+      <label for="en-comp">합성수 포함</label> <span>▾</span>
+    </div>
+    <div class="filter-body" id="f-comp">
+      <label class="fc"><input type="checkbox" name="comp" value="0"> 0개</label>
+      <label class="fc"><input type="checkbox" name="comp" value="1"> 1개</label>
+      <label class="fc"><input type="checkbox" name="comp" value="2"> 2개</label>
+      <label class="fc"><input type="checkbox" name="comp" value="3" checked> 3개</label>
+      <label class="fc"><input type="checkbox" name="comp" value="4" checked> 4개</label>
+      <label class="fc"><input type="checkbox" name="comp" value="5" checked> 5개</label>
+      <label class="fc"><input type="checkbox" name="comp" value="6"> 6개</label>
+    </div>
+  </div>
+
+  <div class="filter-block">
+    <div class="filter-header" onclick="toggleFilter('f-dbl')">
+      <input type="checkbox" id="en-dbl" checked onclick="event.stopPropagation()">
+      <label for="en-dbl">동형수(11·22·33·44) 포함</label> <span>▾</span>
+    </div>
+    <div class="filter-body" id="f-dbl">
+      <label class="fc"><input type="checkbox" name="dbl" value="0" checked> 0개</label>
+      <label class="fc"><input type="checkbox" name="dbl" value="1" checked> 1개</label>
+    </div>
+  </div>
+
+  <div class="filter-block">
+    <div class="filter-header" onclick="toggleFilter('f-ac')">
+      <input type="checkbox" id="en-ac" checked onclick="event.stopPropagation()">
+      <label for="en-ac">A/C값 포함</label> <span>▾</span>
+    </div>
+    <div class="filter-body" id="f-ac">
+      <label class="fc"><input type="checkbox" name="acv" value="3"> 3</label>
+      <label class="fc"><input type="checkbox" name="acv" value="4"> 4</label>
+      <label class="fc"><input type="checkbox" name="acv" value="5"> 5</label>
+      <label class="fc"><input type="checkbox" name="acv" value="6" checked> 6</label>
+      <label class="fc"><input type="checkbox" name="acv" value="7" checked> 7</label>
+      <label class="fc"><input type="checkbox" name="acv" value="8" checked> 8</label>
+      <label class="fc"><input type="checkbox" name="acv" value="9" checked> 9</label>
+      <label class="fc"><input type="checkbox" name="acv" value="10" checked> 10</label>
+    </div>
+  </div>
+
+  <div class="filter-block">
+    <div class="filter-header" onclick="toggleFilter('f-mul3')">
+      <input type="checkbox" id="en-mul3" checked onclick="event.stopPropagation()">
+      <label for="en-mul3">3의 배수 포함</label> <span>▾</span>
+    </div>
+    <div class="filter-body" id="f-mul3">
+      <label class="fc"><input type="checkbox" name="mul3" value="0"> 0개</label>
+      <label class="fc"><input type="checkbox" name="mul3" value="1" checked> 1개</label>
+      <label class="fc"><input type="checkbox" name="mul3" value="2" checked> 2개</label>
+      <label class="fc"><input type="checkbox" name="mul3" value="3" checked> 3개</label>
+      <label class="fc"><input type="checkbox" name="mul3" value="4"> 4개</label>
+      <label class="fc"><input type="checkbox" name="mul3" value="5"> 5개</label>
+    </div>
+  </div>
+
+  <div class="filter-block">
+    <div class="filter-header" onclick="toggleFilter('f-mul5')">
+      <input type="checkbox" id="en-mul5" checked onclick="event.stopPropagation()">
+      <label for="en-mul5">5의 배수 포함</label> <span>▾</span>
+    </div>
+    <div class="filter-body" id="f-mul5">
+      <label class="fc"><input type="checkbox" name="mul5" value="0" checked> 0개</label>
+      <label class="fc"><input type="checkbox" name="mul5" value="1" checked> 1개</label>
+      <label class="fc"><input type="checkbox" name="mul5" value="2" checked> 2개</label>
+      <label class="fc"><input type="checkbox" name="mul5" value="3"> 3개</label>
+      <label class="fc"><input type="checkbox" name="mul5" value="4"> 4개</label>
+    </div>
+  </div>
+
+  <!-- 게임 수 선택 -->
+  <div class="section">
+    <div class="section-title">게임 수</div>
+    <div class="count-btns" id="count-btns">
+      <button class="count-btn" data-count="5">5게임</button>
+      <button class="count-btn active" data-count="10">10게임</button>
+      <button class="count-btn" data-count="20">20게임</button>
+      <button class="count-btn" data-count="30">30게임</button>
+      <button class="count-btn" data-count="40">40게임</button>
+      <button class="count-btn" data-count="50">50게임</button>
+      <button class="count-btn" data-count="all" id="btn-all">전체추출</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <button class="btn btn-green" style="width:100%;padding:12px" onclick="generate()">
+      🎲 번호 생성
+    </button>
+    <div style="display:flex;gap:6px;margin-top:8px">
+      <select id="wheel-k" style="flex:1;background:var(--card2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px;font-size:.82rem">
+        <option value="0">🚫 휠링 사용안함</option>
+        <option value="3">🛡 5등 보장 (약 24장)</option>
+        <option value="4">🏆 4등 보장 (약 79장)</option>
+      </select>
+      <button class="btn" style="background:#7c3aed;color:#fff;padding:8px 12px;font-size:.82rem" onclick="generateWheel()">
+        🎯 휠링
+      </button>
+    </div>
+    <button class="btn btn-outline" style="width:100%;padding:10px;margin-top:8px" onclick="downloadCSV()">
+      ⬇ CSV 다운로드
+    </button>
+  </div>
+
+</div><!-- /sidebar -->
+
+<!-- ─── MAIN ─────────────────────────────────────────────── -->
+<div class="main" id="main-content">
+
+  <div class="tabs">
+    <div class="tab active" onclick="showTab('result')">🎯 추천결과</div>
+    <div class="tab" onclick="showTab('wheel')">🛡 휠링</div>
+    <div class="tab" onclick="showTab('analysis')">📊 분석</div>
+    <div class="tab" onclick="showTab('history')">📋 이력</div>
+    <div class="tab" onclick="showTab('draws')">📜 역대당첨</div>
+  </div>
+
+  <!-- 결과 탭 -->
+  <div class="tab-content active" id="tab-result">
+    <div class="card">
+      <div class="summary-grid" id="summary-grid">
+        <div class="summary-card"><div class="summary-num" id="sm-pass">-</div><div class="summary-label">필터 통과 조합</div></div>
+        <div class="summary-card"><div class="summary-num" id="sm-pool">-</div><div class="summary-label">선택 번호</div></div>
+        <div class="summary-card"><div class="summary-num" id="sm-games">-</div><div class="summary-label">추천 게임 수</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">
+        추천 게임
+        <span id="next-round-label" style="color:var(--accent);font-size:.9rem"></span>
+      </div>
+      <div class="results-header">
+        <span>#</span><span>번호</span><span style="text-align:center">합계</span>
+        <span style="text-align:center">홀:짝</span><span style="text-align:center">AC</span>
+        <span style="text-align:center">끝수합</span><span style="text-align:center;color:var(--yellow)">점수</span>
+      </div>
+      <div id="result-list">
+        <div style="text-align:center;padding:40px;color:var(--muted)">
+          번호를 선택하고 '번호 생성' 버튼을 눌러주세요
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 휠링 탭 -->
+  <div class="tab-content" id="tab-wheel">
+    <div class="card">
+      <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
+        <span>🛡 보장 휠링</span>
+        <span id="wheel-guarantee-label" style="font-size:.8rem;color:var(--yellow);font-weight:600"></span>
+      </div>
+      <div id="wheel-summary" style="padding:8px 0 12px;color:var(--muted);font-size:.85rem"></div>
+      <div class="results-header">
+        <span>#</span><span>번호</span>
+        <span style="text-align:center">합계</span><span style="text-align:center">홀:짝</span>
+        <span style="text-align:center">AC</span><span style="text-align:center">끝수합</span>
+        <span style="text-align:center;color:var(--yellow)">점수</span>
+      </div>
+      <div id="wheel-list">
+        <div style="text-align:center;padding:40px;color:var(--muted)">
+          번호를 선택하고 사이드바의 🎯 휠링 버튼을 눌러주세요
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 분석 탭 -->
+  <div class="tab-content" id="tab-analysis">
+    <div class="card">
+      <div class="card-title">초과대기 번호 (평균 주기 대비)</div>
+      <div id="overdue-chart"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">번호별 상세 정보</div>
+      <div id="num-table" style="overflow-x:auto"></div>
+    </div>
+  </div>
+
+  <!-- 이력 탭 -->
+  <div class="tab-content" id="tab-history">
+    <div class="card">
+      <div class="card-title">추천 이력 및 채점 결과</div>
+      <div id="history-list">불러오는 중...</div>
+    </div>
+  </div>
+
+  <!-- 역대당첨 탭 -->
+  <div class="tab-content" id="tab-draws">
+    <div class="card">
+      <div class="card-title">
+        역대 당첨번호
+        <span id="draws-count" style="font-size:.8rem;color:var(--muted)"></span>
+      </div>
+      <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="draws-search" type="number" min="1" max="9999" placeholder="회차 검색..."
+          style="background:var(--card2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:7px 12px;font-size:.85rem;width:140px"
+          oninput="filterDraws()">
+        <input id="draws-num-search" type="number" min="1" max="45" placeholder="번호 포함 검색..."
+          style="background:var(--card2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:7px 12px;font-size:.85rem;width:160px"
+          oninput="filterDraws()">
+        <button class="btn btn-sm btn-outline" onclick="document.getElementById('draws-search').value='';document.getElementById('draws-num-search').value='';filterDraws()">초기화</button>
+      </div>
+      <div id="draws-list" style="max-height:60vh;overflow-y:auto"></div>
+    </div>
+  </div>
+
+</div><!-- /main -->
+</div><!-- /container -->
+
+<!-- ─── MOBILE BOTTOM NAV ─────────────────────────────────── -->
+<nav class="mobile-nav" id="mobile-nav">
+  <button class="mnav-btn active" id="mnav-sidebar" onclick="mobileShow('sidebar')">
+    <span class="ico">🎱</span><span>번호/필터</span>
+  </button>
+  <button class="mnav-btn" id="mnav-result" onclick="mobileShowResult('result')">
+    <span class="ico">🎯</span><span>결과</span>
+  </button>
+  <button class="mnav-btn" id="mnav-wheel" onclick="mobileShowResult('wheel')">
+    <span class="ico">🛡</span><span>휠링</span>
+  </button>
+  <button class="mnav-btn" id="mnav-draws" onclick="mobileShowResult('draws')">
+    <span class="ico">📜</span><span>역대</span>
+  </button>
+  <button class="mnav-btn" id="mnav-history" onclick="mobileShowResult('history')">
+    <span class="ico">📋</span><span>이력</span>
+  </button>
+</nav>
+
+<div class="toast" id="toast"></div>
+
+<!-- 수동 입력 모달 -->
+<div class="modal-overlay hidden" id="manual-modal">
+  <div class="modal">
+    <div class="modal-title">✏️ 당첨번호 수동 입력</div>
+    <div class="modal-sub">API 수집이 안 될 때 직접 입력하세요</div>
+    <div style="display:flex;flex-direction:column;gap:12px;text-align:left">
+      <div>
+        <label style="font-size:.82rem;color:var(--muted);display:block;margin-bottom:4px">회차</label>
+        <input id="m-round" type="number" placeholder="예: 1220"
+          style="width:100%;background:var(--card2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:.95rem">
+      </div>
+      <div>
+        <label style="font-size:.82rem;color:var(--muted);display:block;margin-bottom:4px">당첨번호 6개 (쉼표 또는 공백으로 구분)</label>
+        <input id="m-nums" type="text" placeholder="예: 3 14 22 31 38 42"
+          style="width:100%;background:var(--card2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:.95rem">
+      </div>
+      <div>
+        <label style="font-size:.82rem;color:var(--muted);display:block;margin-bottom:4px">보너스 번호</label>
+        <input id="m-bonus" type="number" placeholder="예: 7"
+          style="width:100%;background:var(--card2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:9px 12px;font-size:.95rem">
+      </div>
+      <div id="m-preview" style="display:none;padding:10px;background:var(--card2);border-radius:8px;text-align:center"></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px">
+      <button onclick="submitManual()" style="flex:1;padding:12px;background:var(--green);color:#fff;border:none;border-radius:10px;font-size:.95rem;font-weight:700;cursor:pointer">✅ 저장</button>
+      <button onclick="closeManualModal()" style="flex:1;padding:12px;background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:10px;font-size:.95rem;cursor:pointer">취소</button>
+    </div>
+  </div>
+</div>
+
+<!-- 확인 모달 (사용안함 - 자동생성) -->
+<div class="modal-overlay hidden" id="confirm-modal">
+  <div class="modal">
+    <div class="modal-title">⚠️ 최신 회차 번호 확인</div>
+    <div class="modal-sub">번호 생성 전 최신 당첨번호를 확인해주세요</div>
+    <div class="modal-round" id="mc-round">-회차</div>
+    <div class="modal-nums" id="mc-nums"></div>
+    <div style="font-size:.82rem;color:var(--muted);margin-bottom:16px">
+      보너스: <strong id="mc-bonus" style="color:var(--yellow)">-</strong>
+      &nbsp;|&nbsp; <strong id="mc-date" style="color:var(--text)">-</strong>
+    </div>
+    <div class="modal-step">
+      <div class="step-dot active" id="dot-1">1</div>
+      <div class="step-dot" id="dot-2">2</div>
+      <div class="step-dot" id="dot-3">3</div>
+    </div>
+    <div class="modal-progress" id="mc-progress">
+      자동 확인 중 <span id="mc-step-txt">1</span>/3
+    </div>
+    <button class="btn-cancel-modal" onclick="closeConfirmModal()">취소 — 번호 생성 안 함</button>
+  </div>
+</div>
+
+<script>
+let STATUS = {};
+let selectedPool = new Set();
+let selectedCount = 10;
+let lastGames = [];
+
+// ── 초기화 ──────────────────────────────────────────────────────
+async function init() {
+  await loadStatus();
+  buildNumGrid();
+  buildRangeSelects();
+  setupCheckboxHighlight();
+  setupCountBtns();
+  // 모바일 초기: sidebar 활성
+  if (window.innerWidth <= 768) {
+    document.getElementById('sidebar').classList.add('mob-active');
+    document.getElementById('main-content').classList.remove('mob-active');
+  }
+}
+
+async function loadStatus() {
+  try {
+    const r = await fetch('/api/status');
+    if (!r.ok) throw new Error(`서버 오류: ${r.status}`);
+    STATUS = await r.json();
+    document.getElementById('hd-round').textContent = STATUS.latest_round;
+    document.getElementById('hd-nums').textContent  = STATUS.latest_nums.join('-');
+    document.getElementById('hd-total').textContent = STATUS.total_rounds;
+    document.getElementById('next-round-label').textContent = `${STATUS.next_round}회차`;
+    document.getElementById('sm-pool').textContent = selectedPool.size || STATUS.recommended_pool.length;
+    buildOverdueChart();
+    buildNumTable();
+    STATUS._hist_date = STATUS.latest_date || '';
+  } catch(e) {
+    console.error('loadStatus 오류:', e);
+    showToast('데이터 로드 실패: ' + e.message, 'error');
+  }
+}
+
+// ── 번호 그리드 ──────────────────────────────────────────────────
+function buildNumGrid() {
+  const grid = document.getElementById('num-grid');
+  grid.innerHTML = '';
+  const recPool = new Set(STATUS.recommended_pool || []);
+  for (let n = 1; n <= 45; n++) {
+    const info  = STATUS.num_info?.[n] || {};
+    const isRec = recPool.has(n);
+    const ratio = info.ratio || 0;
+    const btn   = document.createElement('button');
+    btn.className = 'num-btn' + (isRec ? ' recommended' : '') + (ratio >= 2 ? ' overdue' : '');
+    btn.textContent = n;
+    btn.title = `출현:${info.freq}회 / 대기:${info.wait}회 / skip비율:${ratio}x`;
+    btn.onclick = () => toggleNum(n, btn);
+    btn.id = `nb-${n}`;
+    grid.appendChild(btn);
+  }
+  selectPool();
+}
+
+function toggleNum(n, btn) {
+  if (selectedPool.has(n)) {
+    selectedPool.delete(n); btn.classList.remove('selected');
+  } else {
+    selectedPool.add(n); btn.classList.add('selected');
+  }
+  updatePoolInfo();
+}
+
+function selectPool() {
+  selectedPool.clear();
+  document.querySelectorAll('.num-btn').forEach(b => b.classList.remove('selected'));
+  (STATUS.recommended_pool || []).forEach(n => {
+    selectedPool.add(n);
+    const btn = document.getElementById(`nb-${n}`);
+    if (btn) btn.classList.add('selected');
+  });
+  updatePoolInfo();
+}
+
+function clearPool() {
+  selectedPool.clear();
+  document.querySelectorAll('.num-btn').forEach(b => b.classList.remove('selected'));
+  updatePoolInfo();
+}
+
+function updatePoolInfo() {
+  const arr = Array.from(selectedPool).sort((a,b)=>a-b);
+  document.getElementById('pool-info').textContent = `선택: ${arr.length}개`;
+  const badges = document.getElementById('pool-badges');
+  badges.innerHTML = arr.map(n =>
+    `<span class="badge" onclick="toggleNum(${n},document.getElementById('nb-${n}'))">${n}</span>`
+  ).join('');
+  document.getElementById('sm-pool').textContent = arr.length;
+}
+
+// ── 범위 셀렉트 ──────────────────────────────────────────────────
+function buildRangeSelects() {
+  const sumLo = document.getElementById('sum-lo');
+  const sumHi = document.getElementById('sum-hi');
+  for (let v = 20; v <= 260; v += 5) {
+    sumLo.innerHTML += `<option value="${v}" ${v===80?'selected':''}>${v}</option>`;
+    sumHi.innerHTML += `<option value="${v}" ${v===190?'selected':''}>${v}</option>`;
+  }
+  const esLo = document.getElementById('esum-lo');
+  const esHi = document.getElementById('esum-hi');
+  for (let v = 0; v <= 54; v++) {
+    esLo.innerHTML += `<option value="${v}" ${v===14?'selected':''}>${v}</option>`;
+    esHi.innerHTML += `<option value="${v}" ${v===35?'selected':''}>${v}</option>`;
+  }
+}
+
+function toggleFilter(id) {
+  document.getElementById(id).classList.toggle('hidden');
+}
+
+function setupCheckboxHighlight() {
+  document.querySelectorAll('.fc input[type=checkbox]').forEach(cb => {
+    const label = cb.closest('.fc');
+    const update = () => label.classList.toggle('checked', cb.checked);
+    cb.addEventListener('change', update);
+    update();
+  });
+}
+
+function setupCountBtns() {
+  document.querySelectorAll('.count-btn').forEach(btn => {
+    btn.onclick = () => {
+      document.querySelectorAll('.count-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      selectedCount = btn.dataset.count;
+    };
+  });
+}
+
+function collectFilters() {
+  const f = {};
+  const getChecked = (name) => Array.from(document.querySelectorAll(`input[name=${name}]:checked`)).map(c => c.value);
+  const enabled = (id) => document.getElementById(id).checked;
+  if (enabled('en-odd'))   f.odd_even     = getChecked('odd').map(Number);
+  if (enabled('en-hi'))    f.high_low     = getChecked('hi').map(Number);
+  if (enabled('en-sum'))   f.sum_range    = [+document.getElementById('sum-lo').value, +document.getElementById('sum-hi').value];
+  if (enabled('en-esum'))  f.end_sum_range= [+document.getElementById('esum-lo').value, +document.getElementById('esum-hi').value];
+  if (enabled('en-end'))   f.same_end     = getChecked('end');
+  if (enabled('en-zone'))  f.zone_max     = getChecked('zone').map(Number);
+  if (enabled('en-consec'))f.consec       = getChecked('consec');
+  if (enabled('en-prime')) f.prime        = getChecked('prime').map(Number);
+  if (enabled('en-sq'))    f.square       = getChecked('sq').map(Number);
+  if (enabled('en-comp'))  f.composite    = getChecked('comp').map(Number);
+  if (enabled('en-dbl'))   f.double       = getChecked('dbl').map(Number);
+  if (enabled('en-ac'))    f.ac_vals      = getChecked('acv').map(Number);
+  if (enabled('en-mul3'))  f.mul3         = getChecked('mul3').map(Number);
+  if (enabled('en-mul5'))  f.mul5         = getChecked('mul5').map(Number);
+  return f;
+}
+
+// ── 번호 생성 (자동 — 모달 없이 바로 실행) ─────────────────────
+async function generate() {
+  const pool = Array.from(selectedPool).sort((a,b)=>a-b);
+  if (pool.length < 6) {
+    showToast('번호를 6개 이상 선택하세요. (현재 ' + pool.length + '개)', 'error');
+    return;
+  }
+  await doGenerate();
+}
+
+async function generateWheel() {
+  const k = parseInt(document.getElementById('wheel-k').value);
+  if (k === 0) { showToast('휠링이 비활성화되어 있습니다.', 'error'); return; }
+
+  const pool = Array.from(selectedPool).sort((a,b)=>a-b);
+  if (pool.length < 6) { showToast('번호를 6개 이상 선택하세요.', 'error'); return; }
+
+  const btn = document.querySelector('[onclick="generateWheel()"]');
+  btn.disabled = true; btn.textContent = '⏳ 생성 중...';
+
+  try {
+    const res = await fetch('/api/wheel', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({pool, k})
+    });
+    const data = await res.json();
+    if (data.error) { showToast(data.error, 'error'); return; }
+
+    showTab('wheel');
+
+    document.getElementById('wheel-guarantee-label').textContent = data.guarantee;
+    document.getElementById('wheel-summary').innerHTML =
+      `총 <b style="color:var(--text)">${data.total}장</b> &nbsp;|&nbsp; ` +
+      `필터 통과 <b style="color:var(--green)">${data.filter_pass}장</b> &nbsp;|&nbsp; ` +
+      `필터 미통과 <b style="color:var(--red)">${data.total - data.filter_pass}장</b>` +
+      `<span style="margin-left:12px;font-size:.78rem;color:var(--muted)">(미통과도 보장 포함)</span>`;
+
+    const list = document.getElementById('wheel-list');
+    list.innerHTML = data.wheel.map((g, i) =>
+      renderGameRow(g, i, g.filter_ok ? '' : 'opacity:0.45')
+    ).join('');
+  } catch(e) {
+    showToast('오류: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '🎯 휠링';
+  }
+}
+
+async function doGenerate() {
+  const pool = Array.from(selectedPool).sort((a,b)=>a-b);
+  if (pool.length < 6) { showToast('번호를 6개 이상 선택하세요.', 'error'); return; }
+
+  const filters = collectFilters();
+  const btn = document.querySelector('.btn-green');
+  btn.disabled = true; btn.textContent = '⏳ 생성 중...';
+
+  try {
+    const res = await fetch('/api/generate', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ pool, filters, count: selectedCount, mode: 'random' })
+    });
+    if (!res.ok) { const txt = await res.text(); throw new Error(`서버 오류 ${res.status}: ${txt.slice(0,100)}`); }
+    const data = await res.json();
+    if (data.error) { showToast(data.error, 'error'); return; }
+
+    lastGames = data.games;
+    document.getElementById('sm-pass').textContent  = data.total_pass.toLocaleString();
+    document.getElementById('sm-games').textContent = data.games.length;
+    renderResults(data.games);
+    showTab('result');
+
+    if (data.games.length === 0) {
+      showToast('조건을 통과한 조합이 없습니다. 필터를 완화해 보세요.', 'error');
+    } else {
+      showToast(`${data.games.length}게임 생성 완료 (통과조합 ${data.total_pass.toLocaleString()}개 중)`, 'success');
+    }
+  } catch(e) {
+    showToast('생성 실패: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '🎲 번호 생성';
+  }
+}
+
+// ── 결과 렌더링 ──────────────────────────────────────────────────
+function ballColor(n) {
+  if (n<=9) return 'b1'; if (n<=19) return 'b10';
+  if (n<=29) return 'b20'; if (n<=39) return 'b30'; return 'b40';
+}
+
+function renderResults(games) {
+  const list = document.getElementById('result-list');
+  if (!games.length) { list.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted)">통과 조합 없음 — 필터를 완화해 보세요.</div>'; return; }
+  list.innerHTML = games.map((g,i) => renderGameRow(g, i)).join('');
+}
+
+function renderGameRow(g, i, extraStyle) {
+  const balls = g.nums.map(n => `<span class="ball ${ballColor(n)}">${n}</span>`).join('');
+  const score = g.combo_score ?? '-';
+  if (window.innerWidth <= 768) {
+    return `<div class="result-row" style="${extraStyle||''}">
+      <div class="mob-top">
+        <span class="mob-idx">${i+1}</span>
+        <div class="mob-balls">${balls}</div>
+      </div>
+      <div class="mob-stats">합 <b>${g.sum}</b> · 홀:짝 <b>${g.odd}:${6-g.odd}</b> · AC <b>${g.ac}</b> · 끝합 <b>${g.end_sum}</b> · 점수 <b style="color:var(--yellow)">${score}</b></div>
+    </div>`;
+  }
+  return `<div class="result-row" style="${extraStyle||''}">
+    <span class="stat-val">${i+1}</span>
+    <div class="nums">${balls}</div>
+    <span class="stat-val">${g.sum}</span>
+    <span class="stat-val">${g.odd}:${6-g.odd}</span>
+    <span class="stat-val">${g.ac}</span>
+    <span class="stat-val">${g.end_sum}</span>
+    <span class="stat-val" style="color:var(--yellow);font-weight:600">${score}</span>
+  </div>`;
+}
+
+// ── CSV 다운로드 ─────────────────────────────────────────────────
+async function downloadCSV() {
+  const pool = Array.from(selectedPool).sort((a,b)=>a-b);
+  if (pool.length < 6) { showToast('번호를 6개 이상 선택하세요.', 'error'); return; }
+  showToast('CSV 생성 중... 잠시 기다려주세요.', '');
+  const res = await fetch('/api/download', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ pool, filters: collectFilters() })
+  });
+  const blob = await res.blob();
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `lotto_${STATUS.next_round}회차.csv`;
+  a.click(); URL.revokeObjectURL(url);
+  showToast('다운로드 완료!', 'success');
+}
+
+// ── 최신 수집 ────────────────────────────────────────────────────
+async function fetchLatest() {
+  showToast('수집 요청 중...', '');
+  const res  = await fetch('/api/fetch', {method:'POST'});
+  const data = await res.json();
+  if (data.status === 'triggered') {
+    showToast('수집 요청됨! 약 1분 후 자동 새로고침됩니다.', 'success');
+    setTimeout(async () => { await loadStatus(); buildNumGrid(); }, 60000);
+  } else if (data.status === 'saved') {
+    showToast('수집 완료!', 'success');
+    await loadStatus(); buildNumGrid();
+  } else {
+    showToast(data.message || '오류 발생', '');
+  }
+}
+
+// ── 분석 탭 ──────────────────────────────────────────────────────
+function buildOverdueChart() {
+  const info  = STATUS.num_info || {};
+  const nums  = Object.entries(info).sort((a,b) => b[1].ratio - a[1].ratio).slice(0,15);
+  const maxR  = Math.max(...nums.map(([,v]) => v.ratio), 1);
+  document.getElementById('overdue-chart').innerHTML = nums.map(([n, v]) => {
+    const pct = (v.ratio/maxR*100).toFixed(1);
+    return `<div class="overdue-bar">
+      <span class="overdue-label">${n}번</span>
+      <div class="bar-track"><div class="bar-fill ${v.ratio>=2?'high':''}" style="width:${pct}%"></div></div>
+      <span class="overdue-val">${v.ratio}x</span>
+    </div>`;
+  }).join('');
+}
+
+function buildNumTable() {
+  const info = STATUS.num_info || {};
+  const rows = Object.entries(info).sort((a,b)=>b[1].ratio-a[1].ratio);
+  document.getElementById('num-table').innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:.8rem">
+    <tr style="color:var(--muted);border-bottom:1px solid var(--border)">
+      <th style="padding:6px;text-align:left">번호</th>
+      <th style="padding:6px;text-align:center">전체출현</th>
+      <th style="padding:6px;text-align:center">현재대기</th>
+      <th style="padding:6px;text-align:center">skip비율</th>
+      <th style="padding:6px;text-align:center">점수</th>
+      <th style="padding:6px;text-align:center">추천</th>
+    </tr>
+    ${rows.map(([n,v]) => `<tr style="border-bottom:1px solid var(--border)20">
+      <td style="padding:6px"><span class="ball ${ballColor(+n)}" style="width:24px;height:24px;font-size:.7rem">${n}</span></td>
+      <td style="padding:6px;text-align:center;color:var(--muted)">${v.freq}회</td>
+      <td style="padding:6px;text-align:center;color:var(--muted)">${v.wait}회</td>
+      <td style="padding:6px;text-align:center;color:${v.ratio>=2?'var(--red)':v.ratio>=1?'var(--yellow)':'var(--muted)'}">${v.ratio}x</td>
+      <td style="padding:6px;text-align:center;color:var(--accent)">${v.score}</td>
+      <td style="padding:6px;text-align:center">${v.recommended?'✓':''}</td>
+    </tr>`).join('')}
+  </table>`;
+}
+
+// ── 이력 탭 ──────────────────────────────────────────────────────
+async function loadHistory() {
+  const res  = await fetch('/api/history');
+  const data = await res.json();
+  const list = document.getElementById('history-list');
+  if (!data.length) { list.innerHTML = '<div style="color:var(--muted);padding:20px">이력 없음</div>'; return; }
+  list.innerHTML = data.map(entry => {
+    const actNums = entry.actual?.번호?.join(' ') || '미입력';
+    const gradeHtml = entry.grades.length ?
+      entry.grades.map((g,i) => {
+        const balls = g.game.map(n=>`<span class="ball ${ballColor(n)}" style="width:22px;height:22px;font-size:.65rem">${n}</span>`).join('');
+        return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0">
+          <span style="color:var(--muted);font-size:.75rem;width:50px">${i+1}게임</span>
+          <div style="display:flex;gap:2px">${balls}</div>
+          <span class="grade-${g.grade}" style="margin-left:auto">${g.match}개 ${g.grade}</span>
+        </div>`;
+      }).join('') : '<div style="color:var(--muted);font-size:.8rem">결과 미입력</div>';
+    return `<div class="hist-row">
+      <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+        <strong>${entry.round}회차</strong>
+        <span style="color:var(--muted);font-size:.75rem">${entry.generated}</span>
+      </div>
+      ${entry.actual ? `<div style="font-size:.8rem;color:var(--muted);margin-bottom:6px">
+        실제: <strong style="color:var(--text)">${actNums}</strong>
+      </div>` : ''}
+      ${gradeHtml}
+    </div>`;
+  }).join('');
+}
+
+// ── 역대당첨 ─────────────────────────────────────────────────────
+let allDraws = [];
+
+async function loadDraws() {
+  if (allDraws.length) { filterDraws(); return; }
+  document.getElementById('draws-list').innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted)">불러오는 중...</div>';
+  try {
+    const res = await fetch('/api/draws');
+    allDraws = await res.json();
+    document.getElementById('draws-count').textContent = `총 ${allDraws.length}회차`;
+    filterDraws();
+  } catch(e) {
+    document.getElementById('draws-list').innerHTML = '<div style="color:var(--red);padding:20px">로드 실패</div>';
+  }
+}
+
+function filterDraws() {
+  const roundQ = document.getElementById('draws-search').value.trim();
+  const numQ   = parseInt(document.getElementById('draws-num-search').value);
+  let list = allDraws;
+  if (roundQ) list = list.filter(d => String(d.round).includes(roundQ));
+  if (!isNaN(numQ)) list = list.filter(d => d.nums.includes(numQ));
+
+  document.getElementById('draws-count').textContent =
+    list.length === allDraws.length ? `총 ${allDraws.length}회차` : `${list.length}개 결과`;
+
+  if (!list.length) {
+    document.getElementById('draws-list').innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted)">검색 결과 없음</div>';
+    return;
+  }
+  document.getElementById('draws-list').innerHTML = list.map(d => {
+    const balls = d.nums.map(n => `<span class="ball ${ballColor(n)}" style="width:26px;height:26px;font-size:.7rem">${n}</span>`).join('');
+    const bonus = `<span class="ball" style="width:26px;height:26px;font-size:.7rem;background:var(--card2);border:2px solid var(--muted);color:var(--muted)">${d.bonus}</span>`;
+    return `<div style="display:flex;align-items:center;gap:8px;padding:7px 4px;border-bottom:1px solid rgba(45,49,72,.4);flex-wrap:nowrap">
+      <span style="font-size:.78rem;color:var(--muted);width:42px;flex-shrink:0;text-align:right">${d.round}회</span>
+      <div style="display:flex;gap:4px;flex-wrap:nowrap;align-items:center">${balls}</div>
+      <span style="color:var(--muted);font-size:.75rem;flex-shrink:0">+</span>
+      ${bonus}
+    </div>`;
+  }).join('');
+}
+
+// ── 탭 전환 ──────────────────────────────────────────────────────
+function showTab(id) {
+  const tabIds = ['result', 'wheel', 'analysis', 'history', 'draws'];
+  document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', tabIds[i] === id));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.getElementById(`tab-${id}`).classList.add('active');
+  if (id === 'history') loadHistory();
+  if (id === 'draws') loadDraws();
+
+  // 모바일에서 탭 전환 시 main 패널로 이동
+  if (window.innerWidth <= 768) {
+    mobileShowMain(id);
+  }
+}
+
+// ── 모바일 패널 전환 ─────────────────────────────────────────────
+function mobileShow(section) {
+  const sidebar = document.getElementById('sidebar');
+  const main    = document.getElementById('main-content');
+  if (section === 'sidebar') {
+    sidebar.classList.add('mob-active');
+    main.classList.remove('mob-active');
+  } else {
+    sidebar.classList.remove('mob-active');
+    main.classList.add('mob-active');
+  }
+  // Update nav buttons
+  document.querySelectorAll('.mnav-btn').forEach(btn => btn.classList.remove('active'));
+  const map = {sidebar:'mnav-sidebar', result:'mnav-result', wheel:'mnav-wheel', analysis:'mnav-analysis', history:'mnav-history'};
+  const target = document.getElementById(map[section]);
+  if (target) target.classList.add('active');
+}
+
+function mobileShowResult(tabId) {
+  showTab(tabId);
+  mobileShow(tabId); // will route to main
+}
+
+function mobileShowMain(tabId) {
+  const sidebar = document.getElementById('sidebar');
+  const main    = document.getElementById('main-content');
+  sidebar.classList.remove('mob-active');
+  main.classList.add('mob-active');
+  const map = {result:'mnav-result', wheel:'mnav-wheel', analysis:'mnav-analysis', history:'mnav-history', draws:'mnav-draws'};
+  document.querySelectorAll('.mnav-btn').forEach(btn => btn.classList.remove('active'));
+  const target = document.getElementById(map[tabId]);
+  if (target) target.classList.add('active');
+}
+
+function closeConfirmModal() {
+  document.getElementById('confirm-modal').classList.add('hidden');
+}
+
+// ── 수동 입력 모달 ────────────────────────────────────────────────
+function openManualModal() {
+  document.getElementById('m-round').value = STATUS.latest_round ? STATUS.latest_round + 1 : '';
+  document.getElementById('m-nums').value = '';
+  document.getElementById('m-bonus').value = '';
+  document.getElementById('m-preview').style.display = 'none';
+  document.getElementById('manual-modal').classList.remove('hidden');
+}
+function closeManualModal() {
+  document.getElementById('manual-modal').classList.add('hidden');
+}
+
+async function submitManual() {
+  const round = parseInt(document.getElementById('m-round').value);
+  const numsRaw = document.getElementById('m-nums').value.trim().split(/[\s,]+/).map(Number);
+  const bonus = parseInt(document.getElementById('m-bonus').value);
+
+  if (!round || numsRaw.length !== 6 || numsRaw.some(isNaN) || isNaN(bonus)) {
+    showToast('회차, 번호 6개, 보너스를 올바르게 입력하세요.', 'error'); return;
+  }
+
+  try {
+    const res = await fetch('/api/manual_add', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ round, nums: numsRaw, bonus })
+    });
+    const data = await res.json();
+    if (data.error) { showToast(data.error, 'error'); return; }
+
+    closeManualModal();
+    showToast(`${round}회차 등록 완료! (${data.nums.join('-')} +${data.bonus})`, 'success');
+    await loadStatus();
+    buildNumGrid();
+    allDraws = []; // 역대당첨 캐시 초기화
+  } catch(e) {
+    showToast('저장 실패: ' + e.message, 'error');
+  }
+}
+
+// ── 토스트 ───────────────────────────────────────────────────────
+function showToast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = `toast show ${type}`;
+  setTimeout(()=>t.classList.remove('show'), 3000);
+}
+
+init();
+</script>
+</body>
+</html>
