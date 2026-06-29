@@ -163,7 +163,7 @@ def score_combo(combo, scores, pf, tf, ep, et):
     tri_b  = sum(tf.get(t,0)/et - 1.0 for t in icombs(n,3)) * 0.3
     return base + pair_b + tri_b
 
-def select_candidates(data, scores, freq, waiting, avg_skip, target=13):
+def select_candidates(data, scores, freq, waiting, avg_skip, target=15):
     """
     12~15개 유력번호 추리기
     기준 ①: 스킵비율 상위
@@ -312,7 +312,7 @@ def cmd_recommend(args, data=None, save=False):
     scores, freq, waiting, avg_skip = compute_scores(data)
 
     # ── 12~15개 유력번호 추리기 ──────────────────────────────────
-    pool = select_candidates(data, scores, freq, waiting, avg_skip, target=13)
+    pool = select_candidates(data, scores, freq, waiting, avg_skip, target=15)
 
     # 이전회차 이월수 중 점수 상위 1개 강제 포함
     best_carry = max(prev_nums, key=lambda n: scores[n])
@@ -526,8 +526,8 @@ def cmd_analyze(args):
         carry = sorted(prev & set(data[i]['번호']))
         print(f"    {data[i]['회차']}회: {data[i]['번호']}  이월:{carry or '없음'}")
 
-    print(f"\n  [현재 유력번호 풀 (13개)]")
-    pool = select_candidates(data, scores, freq, waiting, avg_skip, target=13)
+    print(f"\n  [현재 유력번호 풀 (15개)]")
+    pool = select_candidates(data, scores, freq, waiting, avg_skip, target=15)
     print(f"  {pool}")
 
     sums = [sum(d['번호']) for d in data]

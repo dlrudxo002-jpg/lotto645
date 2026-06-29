@@ -134,7 +134,7 @@ def score_combo(combo, scores, pair_freq, triple_freq, exp_pair, exp_triple):
                  for t in icombs(n,3)) * 0.3          # 핫트리플 보너스 (가중치 낮춤)
     return base + pair_b + tri_b
 
-def get_recommended_pool(data, scores, freq, waiting, avg_skip, size=13):
+def get_recommended_pool(data, scores, freq, waiting, avg_skip, size=15):
     ranked = sorted(scores.items(), key=lambda x:-x[1])
     zones  = [(1,9),(10,19),(20,29),(30,39),(40,45)]
     pool   = []
