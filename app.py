@@ -69,6 +69,13 @@ def compute_pair_triple(data):
     exp_triple = total * 20 / (45*44*43/6)   # ≈ 1.72
     return pair_freq, triple_freq, exp_pair, exp_triple
 
+# 번호 점수 가중치 (2026-09-13 재검증) — 근거는 lotto.py 동일 상수 주석 참조.
+# 스킵비율 5.0 가중은 워크포워드 백테스팅에서 초기하분포 기대치를 하회해 폐기.
+# 세 항 동등 가중, 점수는 예측 지표가 아니라 풀 구성용 타이브레이크.
+W_SKIP = 1.0
+W_Z    = 1.0
+W_PAIR = 1.0
+
 def compute_scores(data):
     total        = len(data)
     latest_round = data[-1]['회차']
@@ -89,21 +96,16 @@ def compute_scores(data):
         for n in d['번호']: last_seen[n] = d['회차']
     waiting = {n: latest_round-last_seen[n] for n in range(1,46)}
 
-    # 페어 친화도: 각 번호가 참여하는 페어의 평균 출현비율
-    pair_freq, _, exp_pair, _ = compute_pair_triple(data)
-    pair_affinity = {}
-    for n in range(1,46):
-        ratios = [pair_freq[p]/exp_pair
-                  for m in range(1,46) if m != n
-                  for p in [(min(n,m), max(n,m))]]
-        pair_affinity[n] = (sum(ratios)/len(ratios) - 1.0) * 2.0  # 기대치 초과분
+    # 페어 친화도 — 닫힌형. 유도와 근거는 lotto.compute_scores 주석 참조.
+    # 독립 정보가 아니라 빈도의 선형 재표현이다(Z역 항과 Spearman -0.996).
+    pair_affinity = {n: 15.0*freq[n]/total - 2.0 for n in range(1,46)}
 
     scores = {}
     for n in range(1,46):
         avg_sk = avg_skip.get(n, total/6)
-        skip_s  = (waiting[n]/avg_sk) * 5.0          # 스킵비율 (핵심)
-        z_s     = (-(freq[n]-avg_f)/std_f) * 1.5     # 장기 저빈도
-        pair_s  = pair_affinity[n] * 1.0              # 페어 친화도
+        skip_s  = (waiting[n]/avg_sk) * W_SKIP       # 스킵비율 (예측력 없음 — 타이브레이크)
+        z_s     = (-(freq[n]-avg_f)/std_f) * W_Z     # 장기 저빈도
+        pair_s  = pair_affinity[n] * W_PAIR          # 페어 친화도
         scores[n] = skip_s + z_s + pair_s
     return scores, freq, waiting, avg_skip
 
@@ -125,13 +127,17 @@ def compute_wheel(pool, k=3):
         uncov -= cov[best_i]
     return [[pool[i] for i in all_6[wi]] for wi in result]
 
+# 조합 점수의 페어/트리플 가중치 — 근거·재보정 주의사항은 lotto.py 동일 상수 주석 참조.
+W_COMBO_PAIR = 0.286
+W_COMBO_TRI  = 0.086   # = 0.3(기존 트리플 계수) x 0.286
+
 def score_combo(combo, scores, pair_freq, triple_freq, exp_pair, exp_triple):
     n = sorted(combo)
     base   = sum(scores[x] for x in n)
     pair_b = sum(pair_freq.get(p,0)/exp_pair - 1.0
-                 for p in icombs(n,2))                # 핫페어 보너스
+                 for p in icombs(n,2)) * W_COMBO_PAIR      # 핫페어 보너스
     tri_b  = sum(triple_freq.get(t,0)/exp_triple - 1.0
-                 for t in icombs(n,3)) * 0.3          # 핫트리플 보너스 (가중치 낮춤)
+                 for t in icombs(n,3)) * W_COMBO_TRI       # 핫트리플 보너스
     return base + pair_b + tri_b
 
 def get_recommended_pool(data, scores, freq, waiting, avg_skip, size=15):
@@ -292,21 +298,24 @@ def api_status():
     })
 
 def save_draw(rnd, nums, bonus, date):
-    """당첨번호를 CSV와 history.json에 저장."""
-    with open(CSV_PATH, 'a', encoding='utf-8', newline='') as f:
-        csv.writer(f).writerow([rnd] + nums + [bonus])
+    """
+    당첨번호를 CSV·성적표·history.json에 저장.
+    CSV 쓰기는 accumulate.record_manual에 위임한다 — 직접 쓰면 성적표가
+    그 회차를 영영 건너뛴다(중복 확인·채점 순서도 거기서 함께 보장된다).
+    반환: False = 이미 있는 회차라 아무것도 쓰지 않음.
+    """
+    # 채점을 CSV 기록보다 **먼저** 한다. 손상된 recommend 때문에 채점이 터져도
+    # CSV·성적표에만 남고 history.json에는 없는 반쪽 상태가 생기지 않는다
+    # (hist는 메모리에만 있고 save_history까지 가야 디스크에 반영된다).
+    from lotto import record_actual
     hist = load_history()
-    key  = str(rnd)
-    if key not in hist: hist[key] = {}
-    hist[key]['actual'] = {'번호': nums, '보너스': bonus, '날짜': date}
-    prev_key = str(rnd - 1)
-    if prev_key in hist and 'recommend' in hist[prev_key]:
-        try:
-            from lotto import grade_match
-            hist[prev_key]['result'] = grade_match(hist[prev_key]['recommend'],
-                                                    {'번호': nums, '보너스': bonus})
-        except: pass
+    record_actual(hist, rnd, nums, bonus, date)
+
+    import accumulate
+    if accumulate.record_manual(rnd, nums, bonus) == 'duplicate':
+        return False   # hist 변경분은 저장하지 않고 버린다
     save_history(hist)
+    return True
 
 @app.route('/api/save_draw', methods=['POST'])
 def api_save_draw():
@@ -321,7 +330,8 @@ def api_save_draw():
     data  = load_data()
     if rnd <= data[-1]['회차']:
         return jsonify({'status': 'already exists', 'rnd': rnd})
-    save_draw(rnd, nums, bonus, date)
+    if not save_draw(rnd, nums, bonus, date):
+        return jsonify({'status': 'already exists', 'rnd': rnd})
     return jsonify({'status': 'saved', 'rnd': rnd, 'nums': nums, 'bonus': bonus})
 
 @app.route('/api/fetch', methods=['POST'])
@@ -495,16 +505,10 @@ def api_history():
 
         grades = []
         if recs and act:
-            res = entry.get('result')
-            if not res:
-                actual_set = set(act['번호'])
-                res = []
-                for g in recs:
-                    m = len(set(g) & actual_set)
-                    b = act['보너스'] in g
-                    gr = '1등' if m==6 else '2등' if m==5 and b else '3등' if m==5 else '4등' if m==4 else '5등' if m==3 else '낙첨'
-                    res.append({'game': g, 'match': m, 'grade': gr})
-            grades = res
+            # 등수 판정은 lotto.grade_match 하나만 쓴다. 과거에는 이 자리에
+            # 같은 판정식이 한 벌 더 인라인으로 복사돼 있었다.
+            from lotto import grade_match
+            grades = entry.get('result') or grade_match(recs, act)
 
         result.append({
             'round': rnd,
@@ -521,34 +525,26 @@ def api_manual_add():
     rnd   = int(body.get('round', 0))
     nums  = sorted([int(n) for n in body.get('nums', [])])
     bonus = int(body.get('bonus', 0))
+    # 추첨일은 선택 입력이다. 없으면 기록하지 않는다 — 오늘 날짜를 넣으면
+    # 과거 회차를 수동 등록할 때 추첨일이 조작된다(/api/status의 latest_date가
+    # 그 값을 그대로 보여준다). 미입력 시 날짜칸이 비는 것은 구 동작과 같다.
+    date  = body.get('date') or None
 
     if rnd <= 0 or len(nums) != 6 or not bonus:
         return jsonify({'error': '입력값 오류'}), 400
     if any(n < 1 or n > 45 for n in nums + [bonus]):
         return jsonify({'error': '번호는 1~45 범위여야 합니다'}), 400
 
-    # 중복 확인
-    data = load_data()
-    existing = {d['회차'] for d in data}
-    if rnd in existing:
-        return jsonify({'error': f'{rnd}회차는 이미 등록되어 있습니다'}), 400
-
-    # CSV 추가
-    with open(CSV_PATH, 'a', encoding='utf-8', newline='') as f:
-        csv.writer(f).writerow([rnd] + nums + [bonus])
-
-    # history 업데이트
+    # 순서·이유는 save_draw와 동일하다 (채점 먼저, CSV 다음, 저장 마지막).
+    from lotto import record_actual
     hist = load_history()
-    key  = str(rnd)
-    if key not in hist: hist[key] = {}
-    hist[key]['actual'] = {'번호': nums, '보너스': bonus}
-    prev_key = str(rnd - 1)
-    if prev_key in hist and 'recommend' in hist[prev_key]:
-        try:
-            from lotto import grade_match
-            hist[prev_key]['result'] = grade_match(hist[prev_key]['recommend'],
-                                                    {'번호': nums, '보너스': bonus})
-        except: pass
+    record_actual(hist, rnd, nums, bonus, date)
+
+    # CSV 추가 — 중복 확인·채점·성적표 갱신을 accumulate가 한 곳에서 처리한다.
+    # 여기서 직접 CSV에 쓰면 그 회차는 성적표에서 영구 누락된다.
+    import accumulate
+    if accumulate.record_manual(rnd, nums, bonus) == 'duplicate':
+        return jsonify({'error': f'{rnd}회차는 이미 등록되어 있습니다'}), 400
     save_history(hist)
 
     return jsonify({'ok': True, 'round': rnd, 'nums': nums, 'bonus': bonus})

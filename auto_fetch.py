@@ -1,71 +1,40 @@
 # -*- coding: utf-8 -*-
-import csv, os, re, urllib.request, urllib.parse
+"""
+자동 수집 진입점 (CI 워크플로·스케줄러용).
+
+과거에는 네이버 검색결과 HTML을 정규식으로 긁었다. 그 방식은
+  - 공식 데이터가 아니고(검색 페이지 마크업이 바뀌면 조용히 멈춘다),
+  - 당첨금·성적표를 누적하지 못하며,
+  - 같은 코드가 .github/workflows/lotto-fetch.yml에 한 벌 더 복사돼 있었다.
+2026-09-13, 수집 경로를 accumulate.sync() 하나로 통합했다.
+
+사용법:
+    python -X utf8 auto_fetch.py
+종료 코드: 0 = 정상(새 회차 유무 무관), 1 = 수집 실패(형식 변경·네트워크 등)
+"""
+import sys
 from datetime import datetime
 
-BASE     = os.path.dirname(os.path.abspath(__file__))
-CSV_PATH = os.path.join(BASE, 'lotto645_전체.csv')
-NAVER_URL = 'https://search.naver.com/search.naver?query={}'
+import accumulate
 
-def fetch_from_naver(rnd):
-    query = urllib.parse.quote(f'로또 {rnd}회')
-    url = NAVER_URL.format(query)
-    req = urllib.request.Request(url, headers={
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'ko-KR,ko;q=0.9'
-    })
-    with urllib.request.urlopen(req, timeout=10) as res:
-        html = res.read().decode('utf-8', errors='ignore')
-
-    # 실제로 해당 회차가 선택됐는지 확인
-    if f'data-kgs-option="{rnd}" aria-selected="true"' not in html:
-        return None
-
-    win_idx = html.find('win_number_box')
-    if win_idx < 0:
-        return None
-
-    section = html[win_idx:win_idx + 800]
-    balls = re.findall(r'class="ball type\d+">(\d+)<', section)
-    if len(balls) < 7:
-        return None
-
-    nums  = sorted([int(x) for x in balls[:6]])
-    bonus = int(balls[6])
-    date_m = re.search(rf'{rnd}회차 \((\d{{4}}\.\d{{2}}\.\d{{2}})\.\)', html)
-    date   = date_m.group(1).replace('.', '-') if date_m else ''
-    return nums, bonus, date
 
 def fetch_latest():
-    latest = 0
+    stamp = datetime.now().strftime('%Y-%m-%d %H:%M')
     try:
-        with open(CSV_PATH, encoding='utf-8') as f:
-            for row in csv.DictReader(f):
-                latest = max(latest, int(row['회차']))
+        added = accumulate.sync(verbose=True)
     except Exception as e:
-        print(f'CSV 읽기 오류: {e}')
-        return
+        # 실패를 0으로 끝내면 CI가 초록불인 채로 수집이 멈춘다. 반드시 실패로 알린다.
+        print(f'[{stamp}] 수집 실패 — {type(e).__name__}: {e}')
+        return 1
 
-    added, rnd = 0, latest + 1
-    rows = []
-    while True:
-        try:
-            result = fetch_from_naver(rnd)
-            if not result:
-                break
-            nums, bonus, date = result
-            rows.append([rnd] + nums + [bonus])
-            added += 1
-            rnd += 1
-        except:
-            break
-
-    if rows:
-        with open(CSV_PATH, 'a', encoding='utf-8', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerows(rows)
-        print(f'[{datetime.now().strftime("%Y-%m-%d %H:%M")}] {added}회차 수집 완료 (최신: {rnd-1}회)')
+    if added:
+        last = added[-1]['회차']
+        print(f'[{stamp}] {len(added)}회차 수집 완료 (최신: {last}회)')
+        accumulate.report_board(accumulate.load_board())
     else:
-        print(f'[{datetime.now().strftime("%Y-%m-%d %H:%M")}] 새 회차 없음 (현재 최신: {latest}회)')
+        print(f'[{stamp}] 새 회차 없음')
+    return 0
+
 
 if __name__ == '__main__':
-    fetch_latest()
+    sys.exit(fetch_latest())

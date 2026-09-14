@@ -8,6 +8,8 @@
   python lotto.py history           — 추천 이력 및 성과 조회
   python lotto.py status            — 현황 요약
   python lotto.py update <회차> <번1~6> <보너스>  — 수동 입력
+  python lotto.py regrade           — 저장된 채점결과를 같은 회차 키로 재채점
+                                      (채점키 off-by-one 수정 배포 후 1회 실행)
 """
 import csv, sys, json, os, random, urllib.request, urllib.error
 from datetime import datetime
@@ -35,7 +37,8 @@ FROG_ZONES = [
     {5,12,19,26,33,40},   {6,13,20,27,34,41},
     {7,14,21,28,35,42},
 ]
-API_URL = 'https://www.dhlottery.co.kr/common.do?method=getLottoNumber&drwNo={}'
+# 수집 엔드포인트는 accumulate.py가 단독 관리한다 (accumulate.API).
+# 구 주소 'common.do?method=getLottoNumber'는 사이트 개편으로 302 — 2026-09-13 제거.
 
 # ══════════════════════════════════════════════════════════════════
 # 공통 함수
@@ -119,9 +122,21 @@ def compute_pair_triple(data):
     et = total * 20 / (45*44*43/6)
     return pf, tf, ep, et
 
+# 번호 점수 가중치 (2026-09-13 재검증)
+# 구 설정: 스킵비율 5.0 / Z점수 1.5 / 페어친화도 1.0 — 스킵비율이 "핵심"으로 문서화돼 있었으나
+# backtest_current.py 워크포워드 검증(1180회, look-ahead 없음)에서 예측력이 확인되지 않았다.
+#   워크포워드 51~1241회(1191회차), 풀 15개·페어항 포함 = 프로덕션 동일 조건.
+#   구 가중치 실측    : >=3 29.72% / >=4 8.14% / >=5 1.09% / 6/6 0회
+#   신 가중치 실측    : >=3 30.56% / >=4 8.98% / >=5 1.09% / 6/6 1회
+#   초기하분포 기대치 : >=3 31.14% / >=4 8.46% / >=5 1.17% / 6/6 0.73회
+# 기대치를 하회하므로 5.0 가중은 근거가 없다. 세 항을 동등 가중으로 평탄화하고,
+# 점수는 "예측 지표"가 아니라 풀 구성 시 순위를 정하는 타이브레이크로만 사용한다.
+W_SKIP = 1.0   # 스킵비율 (예측력 없음 — 타이브레이크)
+W_Z    = 1.0   # 장기 저빈도 Z점수 역방향
+W_PAIR = 1.0   # 페어 친화도
+
 def compute_scores(data):
-    """스킵비율 × 5.0 + Z점수 × 1.5 + 페어친화도 × 1.0"""
-    from itertools import combinations as icombs
+    """스킵비율 + Z점수 + 페어친화도 (동등 가중 타이브레이크 — 예측 지표 아님)"""
     total        = len(data)
     latest_round = data[-1]['회차']
     all_nums     = [n for d in data for n in d['번호']]
@@ -141,32 +156,47 @@ def compute_scores(data):
         for n in d['번호']: last_seen[n] = d['회차']
     waiting = {n: latest_round-last_seen[n] for n in range(1,46)}
 
-    pf, _, ep, _ = compute_pair_triple(data)
-    pair_affinity = {}
-    for n in range(1,46):
-        ratios = [pf[(min(n,m),max(n,m))]/ep for m in range(1,46) if m!=n]
-        pair_affinity[n] = (sum(ratios)/len(ratios) - 1.0) * 2.0
+    # 페어 친화도는 독립 정보가 아니다. 이중루프를 전개하면 닫힌형이 나온다:
+    #   sum_{m!=n} pf[(n,m)] = 5*freq[n]  (n이 든 회차마다 n을 포함한 페어가 5개)
+    #   ep = total*15/990 = total/66
+    #   => (5*freq[n]/44)/(total/66) - 1) * 2 = 15*freq[n]/total - 2
+    # 즉 **빈도의 선형 재표현**이며 Z역 항(-(freq-avg)/std)과 정확히 반대 방향이다
+    # (Spearman -0.996, 페어 항이 Z역 항을 12.6% 상쇄한다 — CLAUDE.md [D] 참조).
+    # 항목이 3개로 보이지만 독립 신호는 2개(스킵비율, 빈도)뿐이라는 사실을
+    # 코드에서 바로 보이게 한다. W_Z만 조정하면 빈도 신호가 조용히 감쇄된다.
+    # 값은 동일하다: 이중루프 대비 최대 오차 4.44e-16, 51~1241회 전수에서
+    # 추천 풀 15개가 1건도 달라지지 않음(검증 2026-09-14).
+    pair_affinity = {n: 15.0*freq[n]/total - 2.0 for n in range(1,46)}
 
     scores = {}
     for n in range(1,46):
         avg_sk = avg_skip.get(n, total/6)
-        scores[n] = ((waiting[n]/avg_sk)*5.0
-                     + (-(freq[n]-avg_f)/std_f)*1.5
-                     + pair_affinity[n]*1.0)
+        scores[n] = ((waiting[n]/avg_sk)*W_SKIP
+                     + (-(freq[n]-avg_f)/std_f)*W_Z
+                     + pair_affinity[n]*W_PAIR)
     return scores, freq, waiting, avg_skip
+
+# 조합 점수의 페어/트리플 항 가중치.
+# base(번호 점수 합)는 W_SKIP/W_Z/W_PAIR 스케일을 따라가지만 페어·트리플 항은
+# 그렇지 않다. 따라서 번호 가중치를 건드리면 조합 랭킹이 소리 없이 뒤집힌다.
+# 실측 sd(필터 통과 조합 3000개 기준): 구 가중 base 9.806 -> 신 가중 base 2.807 (÷3.494).
+# 같은 비율로 페어·트리플을 줄여 원래 의도한 균형(pair/base 0.107, tri/base 0.131)을 복원한다.
+# ※ 번호 가중치를 다시 바꾸면 이 두 상수도 반드시 재보정할 것.
+W_COMBO_PAIR = 0.286
+W_COMBO_TRI  = 0.086   # = 0.3(기존 트리플 계수) x 0.286
 
 def score_combo(combo, scores, pf, tf, ep, et):
     from itertools import combinations as icombs
     n = sorted(combo)
     base   = sum(scores[x] for x in n)
-    pair_b = sum(pf.get(p,0)/ep - 1.0 for p in icombs(n,2))
-    tri_b  = sum(tf.get(t,0)/et - 1.0 for t in icombs(n,3)) * 0.3
+    pair_b = sum(pf.get(p,0)/ep - 1.0 for p in icombs(n,2)) * W_COMBO_PAIR
+    tri_b  = sum(tf.get(t,0)/et - 1.0 for t in icombs(n,3)) * W_COMBO_TRI
     return base + pair_b + tri_b
 
 def select_candidates(data, scores, freq, waiting, avg_skip, target=15):
     """
     12~15개 유력번호 추리기
-    기준 ①: 스킵비율 상위
+    기준 ①: 종합 점수 상위 (예측 지표 아님 — compute_scores 주석 참조)
     기준 ②: 구간(5구역) 균형 — 각 구역 최소 1개
     기준 ③: 홀짝 균형 — 풀 내 홀수 5~8개 (게임 생성 시 다양성 확보)
     """
@@ -241,63 +271,87 @@ def grade_match(games, actual):
         results.append({'game': g, 'match': match, 'grade': grade})
     return results
 
+def record_actual(hist, rnd, nums, bonus, date=None):
+    """
+    확정된 회차 당첨번호를 이력에 기록하고 **같은 회차 키**의 추천을 채점한다.
+
+    키 규약: `hist[str(N)]`은 N회차를 위한 추천(`recommend`)과 N회차의 실제
+    결과(`actual`)를 함께 담는다. `cmd_recommend`가 `str(target_rnd)`에 저장하고
+    `cmd_history`·`app.py /api/history`·`/api/status`의 `has_recommend`도 모두
+    같은 키끼리 대조한다. 따라서 채점도 같은 키여야 한다.
+
+    과거에는 이 자리에서 `str(rnd-1)`의 추천을 채점해 넣었다. 그 결과
+    N-1회차 추천이 N회차 당첨번호로 채점된 채 저장됐고, 표시 경로는 저장된
+    `result`를 재계산보다 우선하므로 화면에도 그 값이 그대로 나왔다.
+    쓰는 곳이 4벌(`cmd_fetch`·`cmd_update`·`save_draw`·`/api/manual_add`)로
+    복사돼 있어 네 곳이 똑같이 틀렸다 — 그래서 함수 하나로 합친다.
+
+    반환: 채점 결과 리스트. 해당 회차 추천이 없으면 None.
+    """
+    entry  = hist.setdefault(str(rnd), {})
+    actual = {'번호': nums, '보너스': bonus}
+    if date is not None:
+        actual['날짜'] = date
+    entry['actual'] = actual
+    if 'recommend' not in entry:
+        return None
+    entry['result'] = grade_match(entry['recommend'], {'번호': nums, '보너스': bonus})
+    return entry['result']
+
 # ══════════════════════════════════════════════════════════════════
 # 커맨드: fetch  — 자동 수집
 # ══════════════════════════════════════════════════════════════════
 def cmd_fetch(args):
-    """동행복권 API로 최신 당첨번호 자동 수집"""
+    """
+    최신 당첨번호 자동 수집.
+
+    수집 자체는 accumulate.sync()에 위임한다 — CSV뿐 아니라 당첨금 이력과
+    성적표(누적 채점)까지 한 번에 갱신되며, 수집 코드가 이 프로젝트에 하나만
+    존재하게 하기 위해서다. 여기서는 추천 이력(history.json) 채점만 맡는다.
+
+    구 엔드포인트(common.do)는 사이트 개편으로 사망했고(2026-09-13 확인),
+    과거 이 자리의 광범위한 except가 그 실패를 "아직 추첨 전"과 구분 없이
+    삼켜 수집이 조용히 멈춰 있었다. 지금은 네트워크·형식 오류를 명시적으로
+    구분해 출력한다.
+    """
+    import accumulate
+
     data     = load_data()
     last_rnd = data[-1]['회차']
-
     print(f"\n  현재 DB 최신: {last_rnd}회차")
-    print(f"  API 조회 시작...\n")
+    print(f"  공식 API 조회 시작...\n")
 
-    added = 0
-    rnd   = last_rnd + 1
-    while True:
-        url = API_URL.format(rnd)
-        try:
-            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=5) as res:
-                result = json.loads(res.read().decode('utf-8'))
-        except Exception as e:
-            print(f"  {rnd}회차 — 아직 발표 안됨 또는 오류 ({e})")
-            break
+    try:
+        added = accumulate.sync(verbose=True)
+    except Exception as e:
+        # 수집 실패는 "새 회차 없음"과 전혀 다른 사건이다. 절대 조용히 넘기지 않는다.
+        # 종료 코드도 0이 아니어야 한다 — 스케줄러가 초록불만 보고 멈춘 수집을
+        # 몇 주씩 못 알아채는 것이 이번 사고의 원인이었다.
+        print(f"\n  [수집 실패] {type(e).__name__}: {e}")
+        if isinstance(e, (urllib.error.URLError, TimeoutError, OSError)):
+            print("  → 네트워크·타임아웃 문제로 보인다. 잠시 후 다시 실행할 것.")
+        elif isinstance(e, (ValueError, KeyError, TypeError)):
+            print("  → 응답 형식이 바뀌었을 수 있다. accumulate.py의 API 상수와 필드명을 확인할 것.")
+        sys.exit(1)
 
-        if result.get('returnValue') != 'success':
-            print(f"  {rnd}회차 — 데이터 없음 (returnValue={result.get('returnValue')})")
-            break
+    if not added:
+        print(f"\n  → 새로운 회차 없음. DB가 최신 상태입니다.")
+        return
 
-        nums  = sorted([result[f'drwtNo{i}'] for i in range(1,7)])
-        bonus = result['bnusNo']
-        date  = result.get('drwNoDate', '')
-
-        # CSV 추가
-        with open(CSV, 'a', encoding='utf-8', newline='') as f:
-            csv.writer(f).writerow([rnd] + nums + [bonus])
-
-        # 히스토리에 실제 결과 기록
-        hist = load_history()
-        key  = str(rnd)
-        if key not in hist: hist[key] = {}
-        hist[key]['actual']   = {'번호': nums, '보너스': bonus, '날짜': date}
-        # 이전 회차 추천 채점
-        prev_key = str(rnd-1)
-        if prev_key in hist and 'recommend' in hist[prev_key]:
-            hist[prev_key]['result'] = grade_match(hist[prev_key]['recommend'],
-                                                   {'번호': nums, '보너스': bonus})
-        save_history(hist)
-
+    # 히스토리에 실제 결과 기록 + **같은 회차** 추천 채점.
+    # hist[str(N)]에는 N회차용 추천과 N회차 실제 결과가 함께 들어간다
+    # (cmd_recommend가 str(target_rnd)에 쓴다). "직전 회차를 채점한다"고
+    # 읽지 말 것 — 이 버그가 4벌로 복사돼 있었던 원인이 그 오독이었다.
+    hist = load_history()
+    for a in added:
+        rnd, nums, bonus, date = a['회차'], a['번호'], a['보너스'], a['날짜']
+        record_actual(hist, rnd, nums, bonus, date)
         print(f"  ✓ {rnd}회차 ({date}): {nums}  보너스:{bonus}")
-        added += 1
-        rnd   += 1
+    save_history(hist)
 
-    if added == 0:
-        print(f"  → 새로운 회차 없음. DB가 최신 상태입니다.")
-    else:
-        print(f"\n  → {added}회차 추가 완료. 다음 회차 추천 생성 중...")
-        data = load_data()
-        cmd_recommend([], data=data, save=True)
+    print(f"\n  → {len(added)}회차 추가 완료. 다음 회차 추천 생성 중...")
+    data = load_data()
+    cmd_recommend([], data=data, save=True)
 
 # ══════════════════════════════════════════════════════════════════
 # 커맨드: recommend
@@ -336,16 +390,21 @@ def cmd_recommend(args, data=None, save=False):
     print(f"{'='*62}")
     print(f"  이전회차: {prev_nums}  보너스:{latest['보너스']}")
 
-    print(f"\n  [유력번호 풀 {len(pool)}개] — 스킵비율·Z점수 기반 선별")
+    print(f"\n  [유력번호 풀 {len(pool)}개] — 구간·홀짝 균형 + 종합점수 순 선별")
     print(f"  {pool}")
 
     print(f"\n  {'번호':>4}  {'skip비율':>8}  {'대기':>6}  {'전체출현':>8}  {'선정이유'}")
     print(f"  {'─'*55}")
+    # 표시용 Z는 루프 밖에서 한 번만 구한다. 과거에는 이 두 값을 번호마다
+    # 다시 계산해 전체 데이터를 45번 훑었고, std_f의 `or 1` 안전판도 빠져 있어
+    # 모든 번호 빈도가 같은 극소 데이터에서 ZeroDivisionError가 났다
+    # (compute_scores:143과 같은 식이어야 한다).
+    avg_f = len([x for d in data for x in d['번호']]) / 45
+    std_f = (sum((c-avg_f)**2 for c in freq.values())/45)**0.5 or 1
     for n in pool:
         avg_sk = avg_skip.get(n, total/6)
         ratio  = waiting[n]/avg_sk
-        z      = (freq[n]-len([x for d in data for x in d['번호']])/45) / \
-                  (sum((c-len([x for d in data for x in d['번호']])/45)**2 for c in freq.values())/45)**0.5
+        z      = (freq[n]-avg_f) / std_f
         reasons = []
         if ratio >= 2.0:   reasons.append(f"초과대기{ratio:.1f}x")
         elif ratio >= 1.0: reasons.append(f"대기중{ratio:.1f}x")
@@ -431,16 +490,12 @@ def cmd_update(args):
         data = load_data()
 
     hist    = load_history()
-    key     = str(rnd)
-    if key not in hist: hist[key] = {}
-    hist[key]['actual'] = {'번호': nums, '보너스': bonus, '날짜': datetime.now().strftime('%Y-%m-%d')}
-    prev_key = str(rnd-1)
-    if prev_key in hist and 'recommend' in hist[prev_key]:
-        results = grade_match(hist[prev_key]['recommend'], {'번호': nums, '보너스': bonus})
-        hist[prev_key]['result'] = results
+    results = record_actual(hist, rnd, nums, bonus,
+                            datetime.now().strftime('%Y-%m-%d'))
+    if results:
         grades = [r['grade'] for r in results]
         best   = next((g for g in ['1등','2등','3등','4등','5등'] if g in grades), '낙첨')
-        print(f"\n  [{rnd-1}회차 추천 채점결과]  최고등수: {best}")
+        print(f"\n  [{rnd}회차 추천 채점결과]  최고등수: {best}")
         for i,r in enumerate(results,1):
             mark = " ★" if r['grade'] != '낙첨' else ""
             print(f"    게임{i:02d}: {r['game']}  {r['match']}개일치  {r['grade']}{mark}")
@@ -452,6 +507,55 @@ def cmd_update(args):
 # ══════════════════════════════════════════════════════════════════
 # 커맨드: history
 # ══════════════════════════════════════════════════════════════════
+def cmd_regrade(args):
+    """
+    history.json의 저장된 `result`를 **같은 회차 키**로 전부 다시 채점한다.
+
+    구 코드는 N회차 당첨번호로 str(N-1)의 추천을 채점해 넣었다. 표시 경로가
+    `entry.get('result') or grade_match(...)`이라 저장값이 재계산보다 우선하므로,
+    그 잘못된 등수는 화면에서 구분되지 않은 채 영구히 남는다. 이 저장소의
+    history.json은 비어 있지만 배포 인스턴스(PythonAnywhere/Render)는 git 밖에서
+    누적되므로, 배포 후 이 명령을 한 번 실행해 과거 기록을 바로잡는다.
+
+    actual이 없는 회차는 CSV에서 보충하고, 그래도 없으면 result를 제거한다
+    (제거해도 표시 경로가 자동 재계산하므로 정보 손실은 없다).
+    """
+    hist = load_history()
+    if not hist:
+        print("  이력 없음. 할 일이 없습니다.")
+        return
+    act_map = {d['회차']: d for d in load_data()}
+
+    fixed = cleared = same = 0
+    for key in sorted(hist.keys(), key=int):
+        entry = hist[key]
+        recs  = entry.get('recommend')
+        if not recs:
+            continue
+        act = entry.get('actual')
+        if not act and int(key) in act_map:
+            d   = act_map[int(key)]
+            act = {'번호': d['번호'], '보너스': d['보너스']}
+        if not act:
+            if entry.pop('result', None) is not None:
+                cleared += 1
+            continue
+        new = grade_match(recs, act)
+        old = entry.get('result')
+        entry['result'] = new
+        if old is None:
+            same += 1
+        elif [r['grade'] for r in old] != [r['grade'] for r in new]:
+            fixed += 1
+            print(f"  · {key}회차 재채점: "
+                  f"{[r['grade'] for r in old]} → {[r['grade'] for r in new]}")
+        else:
+            same += 1
+
+    save_history(hist)
+    print(f"\n  재채점 완료 — 변경 {fixed}건 / 동일 {same}건 / 결과제거 {cleared}건")
+
+
 def cmd_history(args):
     hist = load_history()
     data = load_data()
@@ -562,10 +666,14 @@ def cmd_status(args):
     print(f"  DB:        1~{latest['회차']}회  (총 {total}회)")
     print(f"  최근당첨:  {latest['번호']}  보너스:{latest['보너스']}")
     print(f"  {next_rnd}회차 추천: {'✓ 생성됨' if has_rec else '✗ 미생성'}")
+    # 점수순(ranked)이 아니라 실제 대기비율순으로 정렬해야 제목과 내용이 일치한다.
+    # 가중치 평탄화 이후 점수-대기비율 상관이 0.843 -> 0.458로 떨어져,
+    # 점수순 출력 시 "대기 0회"인 번호가 초과대기 TOP5에 올라오는 오류가 있었다.
     print(f"\n  [TOP5 초과대기]")
-    for n,sc in ranked[:5]:
-        avg_sk = avg_skip.get(n, total/6)
-        ratio  = waiting[n]/avg_sk
+    by_ratio = sorted(range(1,46),
+                      key=lambda n: -(waiting[n]/avg_skip.get(n, total/6)))
+    for n in by_ratio[:5]:
+        ratio = waiting[n]/avg_skip.get(n, total/6)
         print(f"    {n:2d}번  {waiting[n]:3d}회 대기  {ratio:.1f}x")
     print(f"\n  [매주 사용법]")
     print(f"    python lotto.py fetch          ← 당첨번호 자동수집 + 추천 생성")
@@ -586,6 +694,7 @@ COMMANDS = {
     'recommend': cmd_recommend,
     'analyze':   cmd_analyze,
     'history':   cmd_history,
+    'regrade':   cmd_regrade,
     'status':    cmd_status,
 }
 
