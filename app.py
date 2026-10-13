@@ -354,42 +354,154 @@ def api_fetch():
     except Exception as e:
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
+MAX_SPREAD_GAMES = 50     # 게임 수 상한 (측정·검증 범위). 전체추출('all')은 해당 없음
+# 45개 분산 배치의 필터 평가 횟수 상한 — 무료 서버 요청 시간 초과(30초) 방지.
+# 시간이 아니라 횟수로 끊으므로 같은 입력이면 서버 속도와 무관하게 같은 게임이 나온다.
+SPREAD_MAX_EVALS = 60_000
+# '선택 번호 안에서만'(pool 배치·전체추출)은 선택 번호의 6개 조합을 전부 검사한다.
+# 22개 = 74,613조합, 로컬 최대 2.4초(전체추출). 24개는 4.7초로 무료 서버(로컬의 약 5~6배)에서
+# 30초에 근접한다 [확인 필요: 서버 배율은 1회 실측 기반]. 번호가 더 많으면 45개 분산 배치를 쓴다.
+MAX_POOL_NUMS = 22
+
+# 켜진 필터의 화면 이름 (안내 문구용)
+LIST_FILTERS = {
+    'odd_even': '홀 : 짝 비율', 'high_low': '고 : 저 비율', 'same_end': '같은 끝수',
+    'zone_max': '동일구간', 'consec': '연속번호', 'prime': '소수', 'square': '제곱수',
+    'composite': '합성수', 'double': '동형수', 'ac_vals': 'A/C값',
+    'mul3': '3의 배수', 'mul5': '5의 배수',
+}
+RANGE_FILTERS = {'sum_range': '번호 총합 구간', 'end_sum_range': '끝수 총합 구간'}
+
+
+def _is_num(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def check_filters(f):
+    """
+    필터 본문 검사. 문제가 있으면 안내 문구, 없으면 None.
+    켜진 필터에 허용 값이 하나도 없으면 apply_filters 는 홀짝·고저는 '필터 꺼짐'으로,
+    나머지는 '전부 탈락'으로 처리한다. 둘 다 사용자가 뜻한 동작이 아니므로 여기서 막는다.
+    """
+    if not isinstance(f, dict):
+        return '필터 형식이 올바르지 않습니다.'
+    for k, name in LIST_FILTERS.items():
+        v = f.get(k)
+        if v is None:
+            continue
+        if not isinstance(v, list):
+            return f"'{name}' 필터 값 형식이 올바르지 않습니다."
+        if not v:
+            return f"'{name}' 필터가 켜져 있는데 허용 값이 하나도 선택되지 않았습니다. 값을 고르거나 필터를 끄세요."
+        if not all(_is_num(x) or isinstance(x, str) for x in v):
+            return f"'{name}' 필터 값 형식이 올바르지 않습니다."
+    for k, name in RANGE_FILTERS.items():
+        v = f.get(k)
+        if v is None:
+            continue
+        if not isinstance(v, list) or len(v) != 2 or not all(_is_num(x) for x in v):
+            return f"'{name}' 필터에 최솟값과 최댓값을 숫자로 넣으세요."
+        if v[0] > v[1]:
+            return f"'{name}' 필터의 최솟값이 최댓값보다 큽니다."
+    return None
+
+
+def any_combo_passes(ok, tries=4000):
+    """무작위 조합 tries개 안에 필터를 통과하는 것이 하나라도 있는가 (찾는 즉시 멈춘다)."""
+    rng = random.Random(0)
+    return any(ok(sorted(rng.sample(range(1, 46), 6))) for _ in range(tries))
+
 @app.route('/api/generate', methods=['POST'])
 def api_generate():
-    body    = request.json
-    pool    = body.get('pool', [])
-    filters = body.get('filters', {})
+    body    = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify({'error': '요청 형식이 올바르지 않습니다.'}), 400
+    filters = body.get('filters')
+    if filters is None:
+        filters = {}
+    msg = check_filters(filters)
+    if msg:
+        return jsonify({'error': msg}), 400
     count   = body.get('count', 10)   # 5/10/20/30/40/50/'all'
     mode    = body.get('mode', 'random')  # random / all
+    # 배치 방식 (2026-10-13)
+    #   spread45 : 45개 번호 전체에 고르게 나눠 쓰고 선택 번호를 더 자주 쓴다 (기본, 적중 우선)
+    #   pool     : 선택 번호 안에서만 고르되 서로 덜 겹치는 조합을 고른다
+    # 과거 방식(선택 번호 안 조합점수 상위 N개)은 게임끼리 4~5개씩 겹쳐 같이 맞고 같이 틀렸다.
+    # 1246회 풀 10게임 기준 P(최소 1게임 5등 이상): 과거 8.88% / pool 17.08% / spread45 23.01%.
+    # 근거와 측정은 optimizer.py 4-3절.
+    layout  = body.get('layout', 'spread45')
 
-    if not pool or len(pool) < 6:
+    raw_pool = body.get('pool', [])
+    if not isinstance(raw_pool, list) or not all(
+            isinstance(x, int) and not isinstance(x, bool) for x in raw_pool):
+        return jsonify({'error': '번호 형식이 올바르지 않습니다.'}), 400
+    pool = sorted(set(raw_pool))
+    if len(pool) < 6:
         return jsonify({'error': '번호를 6개 이상 선택하세요.'}), 400
+    if pool[0] < 1 or pool[-1] > 45:
+        return jsonify({'error': '번호는 1~45 사이여야 합니다.'}), 400
+    if layout not in ('spread45', 'pool'):
+        return jsonify({'error': f'알 수 없는 배치 방식: {layout}'}), 400
+    if count != 'all':
+        # 화면은 게임 수를 문자열("10")로 보낸다. 참/거짓·소수는 받지 않는다.
+        if isinstance(count, str) and count.strip().isdigit():
+            count = int(count)
+        if not isinstance(count, int) or isinstance(count, bool):
+            return jsonify({'error': '게임 수 형식이 올바르지 않습니다.'}), 400
+        if not 1 <= count <= MAX_SPREAD_GAMES:
+            return jsonify({'error': f'게임 수는 1~{MAX_SPREAD_GAMES} 사이여야 합니다.'}), 400
+    # 전체추출은 선택 번호 안의 통과 조합을 전부 내는 기능이므로 분산 배치와 함께 쓸 수 없다
+    if count == 'all' or mode == 'all':
+        layout = 'pool'
+    if layout == 'pool' and len(pool) > MAX_POOL_NUMS:
+        return jsonify({'error': f"'선택 번호 안에서만'과 전체추출은 번호 {MAX_POOL_NUMS}개까지 지원합니다. "
+                                 f"지금 {len(pool)}개를 골랐습니다. 번호를 줄이거나 '45개 전체 분산'을 쓰세요."}), 400
+
+    import optimizer as O    # 지연 import — 다른 API 응답에 import 비용을 얹지 않는다
 
     # 페어/트리플 빈도 및 점수 준비
     data = load_data()
     sc, _, _, _ = compute_scores(data)
     pf, tf, ep, et = compute_pair_triple(data)
+    ok = lambda g: apply_filters(g, filters)
 
-    # 필터 통과 조합 생성
-    results = []
-    for combo in icombs(pool, 6):
-        if apply_filters(combo, filters):
-            results.append(combo)
-
-    total_pass = len(results)
-
-    if mode == 'all':
-        games_sorted = [list(c) for c in results]
-        return jsonify({'games': games_sorted, 'total': total_pass, 'mode': 'all'})
-
-    # 점수 상위 정렬 후 상위 N개 반환
-    scored = sorted(results, key=lambda c: score_combo(c, sc, pf, tf, ep, et), reverse=True)
-
-    if count == 'all':
-        games = [list(c) for c in scored]
+    patched = failed = 0
+    total_pass = None
+    if layout == 'spread45':
+        # 통과 조합이 거의 없는 조건이면 탐색이 상한까지 헛돈다 — 미리 알린다
+        if not any_combo_passes(ok):
+            return jsonify({'error': '필터 조건이 너무 좁습니다. 무작위 조합 4,000개 중 통과하는 '
+                                     '조합이 하나도 없습니다. 허용 값을 넓히거나 필터를 끄세요.'}), 400
+        priority = (sorted(pool, key=lambda x: -sc[x]) +
+                    sorted((x for x in range(1, 46) if x not in pool), key=lambda x: -sc[x]))
+        tickets, patched, failed = O.spread_tickets(count, priority, ok, pinned=len(pool),
+                                                    seed=data[-1]['회차'] + 1,
+                                                    max_evals=SPREAD_MAX_EVALS)
+        games = [list(t) for t in tickets]
     else:
-        count = int(count)
-        games = [list(c) for c in scored[:count]]
+        # 필터 통과 조합 생성
+        results = [c for c in icombs(pool, 6) if ok(c)]
+        total_pass = len(results)
+
+        if mode == 'all':
+            games_sorted = [list(c) for c in results]
+            return jsonify({'games': games_sorted, 'total': total_pass, 'mode': 'all'})
+
+        # 점수순 정렬 후, 서로 덜 겹치게 N개 (상위 N개를 그대로 자르면 거의 같은 조합만 남는다)
+        scored = sorted(results, key=lambda c: score_combo(c, sc, pf, tf, ep, et), reverse=True)
+        if count == 'all':
+            games = [list(c) for c in scored]
+        else:
+            games = [list(c) for c in O.pick_spread(scored, count)]
+
+    # P(최소 1게임 5등 이상) — 표시용. 전체추출처럼 게임이 많으면 계산하지 않는다.
+    p_win = p_hw = p_indep = None
+    if 0 < len(games) <= MAX_SPREAD_GAMES:
+        p_win, p_hw = O.p_win_fast(games, mc_iters=50_000)
+        p_indep = 1 - (1 - float(O.P_SINGLE_WIN)) ** len(games)   # P_SINGLE_WIN 은 Fraction
+    use = Counter(x for g in games for x in g)
+    pool_set = set(pool)
 
     # 각 게임 통계
     game_info = []
@@ -403,6 +515,9 @@ def api_generate():
             'zone_mx': zone_max(n),
             'end_sum': sum(x%10 for x in n),
             'combo_score': round(score_combo(n, sc, pf, tf, ep, et), 2),
+            'in_pool': sum(1 for x in n if x in pool_set),
+            # pool 배치는 통과 조합에서만 고르므로 다시 검사하지 않는다
+            'filter_ok': True if layout == 'pool' else bool(ok(n)),
         })
 
     return jsonify({
@@ -410,6 +525,14 @@ def api_generate():
         'total_pass': total_pass,
         'requested':  len(games),
         'mode':       'scored',
+        'layout':     layout,
+        'p_win':      p_win,
+        'p_hw':       p_hw,
+        'p_indep':    p_indep,
+        'patched':    patched,
+        'failed':     failed,
+        'pool_uses':  sorted({use[x] for x in pool}),
+        'other_uses': sorted({use[x] for x in range(1, 46) if x not in pool_set}),
     })
 
 @app.route('/api/download', methods=['POST'])

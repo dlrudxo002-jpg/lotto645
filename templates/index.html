@@ -79,6 +79,29 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
   background: var(--card2); color: var(--muted); cursor: pointer; font-size: .83rem; font-weight: 600; transition: .12s; }
 .count-btn:hover, .count-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 
+/* Layout (배치 방식) */
+.layout-btns { display: flex; flex-direction: column; gap: 6px; }
+.layout-btn { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--card2);
+  color: var(--muted); cursor: pointer; transition: .12s; font: inherit; }
+.layout-btn b { font-size: .85rem; }
+.layout-btn span { font-size: .74rem; }
+.layout-btn:hover { border-color: var(--accent); color: var(--text); }
+.layout-btn.active { border-color: var(--accent); background: rgba(79,142,247,.12); color: var(--text); }
+.layout-btn.active b { color: var(--accent); }
+.layout-btn:disabled { opacity: .45; cursor: not-allowed; border-color: var(--border); color: var(--muted); }
+.layout-btn:focus-visible, .count-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.layout-hint { font-size: .74rem; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+.hit-note { font-size: .8rem; color: var(--muted); line-height: 1.6; padding: 0 12px 12px; }
+.hit-note b { color: var(--text); font-variant-numeric: tabular-nums; }
+/* 선택하지 않은 번호: 테두리만 */
+.ball.out { background: transparent; color: var(--text); }
+.ball.out.b1  { box-shadow: inset 0 0 0 2px #e11d48; }
+.ball.out.b10 { box-shadow: inset 0 0 0 2px #f97316; }
+.ball.out.b20 { box-shadow: inset 0 0 0 2px #eab308; }
+.ball.out.b30 { box-shadow: inset 0 0 0 2px #22c55e; }
+.ball.out.b40 { box-shadow: inset 0 0 0 2px #3b82f6; }
+
 /* Main Content */
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
 .card-title { font-size: .9rem; font-weight: 700; color: var(--muted); margin-bottom: 14px;
@@ -516,6 +539,26 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
     </div>
   </div>
 
+  <!-- 배치 방식 선택 (2026-10-13) -->
+  <div class="section">
+    <div class="section-title">배치 방식</div>
+    <div class="layout-btns" id="layout-btns">
+      <button class="layout-btn active" data-layout="spread45">
+        <b>45개 전체 분산 (적중 우선)</b>
+        <span>선택 번호를 우선해 쓰고 나머지 번호도 나눠 씀</span>
+      </button>
+      <button class="layout-btn" data-layout="pool">
+        <b>선택 번호 안에서만</b>
+        <span>선택한 번호로만 조합, 게임끼리 덜 겹치게</span>
+      </button>
+    </div>
+    <div class="layout-hint">
+      같은 장수에서 '최소 1게임 5등 이상' 확률이 가장 높은 것은 45개 전체 분산입니다.
+      전체추출은 선택 번호 안에서만 동작합니다.
+      선택 번호 안에서만·전체추출은 번호 22개까지 지원합니다.
+    </div>
+  </div>
+
   <div class="section">
     <button class="btn btn-green" style="width:100%;padding:12px" onclick="generate()">
       🎲 번호 생성
@@ -552,7 +595,7 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
   <div class="tab-content active" id="tab-result">
     <div class="card">
       <div class="summary-grid" id="summary-grid">
-        <div class="summary-card"><div class="summary-num" id="sm-pass">-</div><div class="summary-label">필터 통과 조합</div></div>
+        <div class="summary-card"><div class="summary-num" id="sm-pass">-</div><div class="summary-label" id="sm-pass-label">최소 1게임 5등 이상</div></div>
         <div class="summary-card"><div class="summary-num" id="sm-pool">-</div><div class="summary-label">선택 번호</div></div>
         <div class="summary-card"><div class="summary-num" id="sm-games">-</div><div class="summary-label">추천 게임 수</div></div>
       </div>
@@ -562,6 +605,7 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
         추천 게임
         <span id="next-round-label" style="color:var(--accent);font-size:.9rem"></span>
       </div>
+      <div class="hit-note" id="hit-note" hidden></div>
       <div class="results-header">
         <span>#</span><span>번호</span><span style="text-align:center">합계</span>
         <span style="text-align:center">홀:짝</span><span style="text-align:center">AC</span>
@@ -718,7 +762,9 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
 let STATUS = {};
 let selectedPool = new Set();
 let selectedCount = 10;
+let selectedLayout = 'spread45';   // spread45 = 45개 전체 분산(적중 우선) / pool = 선택 번호 안에서만
 let lastGames = [];
+let lastPoolSet = null;            // 생성 당시 선택 번호 — 선택하지 않은 번호 표시용
 
 // ── 초기화 ──────────────────────────────────────────────────────
 async function init() {
@@ -727,6 +773,7 @@ async function init() {
   buildRangeSelects();
   setupCheckboxHighlight();
   setupCountBtns();
+  setupLayoutBtns();
   // 모바일 초기: sidebar 활성
   if (window.innerWidth <= 768) {
     document.getElementById('sidebar').classList.add('mob-active');
@@ -844,8 +891,78 @@ function setupCountBtns() {
       document.querySelectorAll('.count-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       selectedCount = btn.dataset.count;
+      syncLayoutBtns();
     };
   });
+}
+
+function setupLayoutBtns() {
+  document.querySelectorAll('.layout-btn').forEach(btn => {
+    btn.onclick = () => {
+      selectedLayout = btn.dataset.layout;
+      syncLayoutBtns();
+    };
+  });
+  syncLayoutBtns();
+}
+
+// 전체추출은 선택 번호 안에서만 동작한다 — 그동안 배치 버튼을 그 상태로 보여 주고,
+// 다른 게임 수로 돌아오면 사용자가 고른 배치로 되돌린다
+function syncLayoutBtns() {
+  const all = selectedCount === 'all';
+  document.querySelectorAll('.layout-btn').forEach(b => {
+    const lay = b.dataset.layout;
+    b.disabled = all && lay === 'spread45';
+    b.classList.toggle('active', all ? lay === 'pool' : lay === selectedLayout);
+  });
+}
+
+// [1] → "1회", [0,1] → "0~1회"
+function fmtUses(arr) {
+  if (!arr || !arr.length) return '';
+  const lo = Math.min(...arr), hi = Math.max(...arr);
+  return lo === hi ? `${lo}회` : `${lo}~${hi}회`;
+}
+
+function fmtPct(p, hw) {
+  const s = (p * 100).toFixed(1) + '%';
+  return hw ? `${s} (±${(hw * 100).toFixed(1)}%p)` : s;
+}
+
+// 결과 카드 상단 설명 줄: 이 게임들의 적중 확률과 번호 사용 횟수
+function renderHitNote(data) {
+  const el = document.getElementById('hit-note');
+  const n = data.games.length;
+  const parts = [];
+  if (data.p_win != null) {
+    parts.push(`이 ${n}게임 중 최소 1게임 5등 이상 <b>${fmtPct(data.p_win, data.p_hw)}</b>`);
+    parts.push(`같은 장수 자동구매 ${fmtPct(data.p_indep)}`);
+  }
+  if (data.layout === 'spread45') {
+    const o = fmtUses(data.other_uses);
+    parts.push(`선택 번호 ${fmtUses(data.pool_uses)}씩` + (o ? `, 나머지 번호 ${o}씩 사용` : ' 사용'));
+  } else if (data.total_pass != null) {
+    parts.push(`필터 통과 ${data.total_pass.toLocaleString()}조합 중 ` +
+               (n === data.total_pass ? '전부' : '서로 덜 겹치게 선택'));
+  }
+  let html = parts.join(' · ');
+  if (data.layout === 'spread45') {
+    const pu = data.pool_uses || [], ou = data.other_uses || [];
+    if (ou.some(u => u > 0)) {
+      html += '<br>테두리만 있는 공은 선택하지 않은 번호입니다.';
+    }
+    // 15·30·45게임은 45개 번호를 모두 같은 횟수로 쓰는 배치가 확률이 가장 높다 (optimizer.py 4-3절)
+    if (pu.length === 1 && ou.length === 1 && pu[0] === ou[0]) {
+      html += '<br>이 게임 수에서는 45개 번호를 모두 같은 횟수로 쓰는 배치가 확률이 가장 높아, ' +
+              '선택 번호를 더 자주 쓰지 않았습니다.';
+    }
+  }
+  if (data.p_win != null) {
+    html += '<br>배치 방식은 당첨 게임 수의 기대값과 1등 확률(게임당 1/8,145,060)을 바꾸지 않습니다. ' +
+            '게임끼리 겹치는 번호를 줄여 "한 게임이라도 맞을" 확률을 높입니다.';
+  }
+  el.innerHTML = html;
+  el.hidden = !html;
 }
 
 function collectFilters() {
@@ -928,22 +1045,35 @@ async function doGenerate() {
   try {
     const res = await fetch('/api/generate', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ pool, filters, count: selectedCount, mode: 'random' })
+      body: JSON.stringify({ pool, filters, count: selectedCount, mode: 'random', layout: selectedLayout })
     });
-    if (!res.ok) { const txt = await res.text(); throw new Error(`서버 오류 ${res.status}: ${txt.slice(0,100)}`); }
+    // 400 은 입력 오류 메시지를 JSON 으로 돌려준다
+    if (!res.ok && res.status !== 400) { const txt = await res.text(); throw new Error(`서버 오류 ${res.status}: ${txt.slice(0,100)}`); }
     const data = await res.json();
     if (data.error) { showToast(data.error, 'error'); return; }
 
     lastGames = data.games;
-    document.getElementById('sm-pass').textContent  = data.total_pass.toLocaleString();
+    lastPoolSet = new Set(pool);
+    const passEl = document.getElementById('sm-pass');
+    const passLbl = document.getElementById('sm-pass-label');
+    if (data.p_win != null) {
+      passEl.textContent = (data.p_win * 100).toFixed(1) + '%';
+      passLbl.textContent = '최소 1게임 5등 이상';
+    } else {
+      passEl.textContent = data.total_pass != null ? data.total_pass.toLocaleString() : '-';
+      passLbl.textContent = '필터 통과 조합';
+    }
     document.getElementById('sm-games').textContent = data.games.length;
+    renderHitNote(data);
     renderResults(data.games);
     showTab('result');
 
     if (data.games.length === 0) {
       showToast('조건을 통과한 조합이 없습니다. 필터를 완화해 보세요.', 'error');
+    } else if (data.failed > 0) {
+      showToast(`${data.failed}게임은 다른 게임과 겹치지 않으면서 필터를 모두 만족하는 조합을 찾지 못했습니다 (흐리게 표시). 필터를 완화하거나 게임 수를 줄여 보세요.`, 'error');
     } else {
-      showToast(`${data.games.length}게임 생성 완료 (통과조합 ${data.total_pass.toLocaleString()}개 중)`, 'success');
+      showToast(`${data.games.length}게임 생성 완료`, 'success');
     }
   } catch(e) {
     showToast('생성 실패: ' + e.message, 'error');
@@ -961,11 +1091,14 @@ function ballColor(n) {
 function renderResults(games) {
   const list = document.getElementById('result-list');
   if (!games.length) { list.innerHTML = '<div style="text-align:center;padding:30px;color:var(--muted)">통과 조합 없음 — 필터를 완화해 보세요.</div>'; return; }
-  list.innerHTML = games.map((g,i) => renderGameRow(g, i)).join('');
+  list.innerHTML = games.map((g,i) => renderGameRow(g, i, g.filter_ok === false ? 'opacity:0.45' : '')).join('');
 }
 
 function renderGameRow(g, i, extraStyle) {
-  const balls = g.nums.map(n => `<span class="ball ${ballColor(n)}">${n}</span>`).join('');
+  // in_pool < 6 이면 선택하지 않은 번호가 섞인 게임 (45개 전체 분산)
+  const markOut = lastPoolSet && g.in_pool != null && g.in_pool < 6;
+  const balls = g.nums.map(n =>
+    `<span class="ball ${ballColor(n)}${markOut && !lastPoolSet.has(n) ? ' out' : ''}">${n}</span>`).join('');
   const score = g.combo_score ?? '-';
   if (window.innerWidth <= 768) {
     return `<div class="result-row" style="${extraStyle||''}">

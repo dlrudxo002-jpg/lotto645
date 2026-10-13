@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-회차 누적 반영 파이프라인 — 새 당첨번호가 확인되면 통계·검증을 함께 갱신한다.
+회차 누적 반영 파이프라인 - 새 당첨번호가 확인되면 통계·검증을 함께 갱신한다.
 
 이 파일이 해결하는 문제:
   기존 `lotto.py fetch`는 구 엔드포인트(common.do)를 호출한다. 동행복권 사이트가
@@ -20,6 +20,7 @@
     python -X utf8 accumulate.py              # 새 회차만 수집·채점·반영 (평상시)
     python -X utf8 accumulate.py --prizes     # 당첨금 이력 전체 백필
     python -X utf8 accumulate.py --rebuild    # 성적표를 1회차부터 전면 재계산
+    python -X utf8 accumulate.py --sales      # 당첨금 CSV '총판매액' 열을 공식값으로 재기록
 """
 import csv
 import json
@@ -35,7 +36,8 @@ CSV_PATH   = os.path.join(BASE, 'lotto645_전체.csv')
 PRIZE_PATH = os.path.join(BASE, 'lotto645_당첨금.csv')
 SCORE_PATH = os.path.join(BASE, 'scoreboard.json')
 
-# 개편 후 엔드포인트. 한 번 호출에 해당 회차부터 10회차분이 역순으로 온다.
+# 개편 후 엔드포인트. srchDir=center라 N회를 물으면 N-5~N+4회 10회차분이 역순으로
+# 온다 (최신 회차 근처는 최신 10회, 1회 근처는 1~10회로 고정 — 2026-10-13 확인).
 API = ('https://www.dhlottery.co.kr/lt645/selectPstLt645InfoNew.do'
        '?srchDir=center&srchLtEpsd={epsd}')
 UA = 'Mozilla/5.0'
@@ -50,7 +52,7 @@ PRIZE_HEADER = ['회차', '추첨일', '1등인원', '1등금액', '2등인원',
 
 # ── 수집 ─────────────────────────────────────────────────────────
 def fetch_window(epsd):
-    """epsd 회차부터 과거 10회차분을 가져온다. 실패는 예외로 올린다 — 삼키지 않는다."""
+    """epsd 회차 앞뒤 10회차분(N-5~N+4)을 가져온다. 실패는 예외로 올린다 — 삼키지 않는다."""
     req = urllib.request.Request(API.format(epsd=epsd), headers={'User-Agent': UA})
     with urllib.request.urlopen(req, timeout=20) as r:
         body = r.read().decode('utf-8')
@@ -67,12 +69,39 @@ def fetch_window(epsd):
 
 
 def fetch_rounds(start, end):
-    """start~end 회차를 수집한다. 10개씩 창을 옮기며 호출한다."""
-    got, epsd = {}, end
-    while epsd >= start:
+    """
+    start~end 회차를 수집한다.
+
+    창 위치를 회차 산술로 미리 정하지 않는다. "아직 못 받은 회차 중 가장 큰 m"을
+    기준으로 m-4를 물어 m-9~m을 한 번에 받고, 그래도 m이 안 오면 m 자체를 묻는다.
+    과거 구현은 end에서 10씩 내려가며 물었는데, center 창이 N-5~N+4라서 end가 최신
+    회차가 아니면 범위 맨 아래가 조용히 빠졌다 (1228~1235 요청 -> 1228·1229 누락,
+    2026-10-13 실측). 두 번 물어도 오지 않는 회차는 결번/미추첨으로 보고 넘긴다 —
+    빠진 회차가 있는지는 호출부가 확인한다.
+
+    각 m은 서로 다른 조회를 최대 2번(m-4, m)만 쓰므로 정상 응답이면 조회 수는
+    2*(end-start+1)을 넘지 않고, 실제로는 10회차당 1~2번이다. 엔드포인트가 1회차씩만
+    주거나 늘 최신 10회만 주는 식으로 망가지면 범위 전체를 한 회차씩 훑게 되므로
+    (1~1245회 = 약 1,200번 호출) 상한을 넘으면 멈춘다.
+    """
+    start = max(1, start)
+    cap = 2 * ((end - start) // 10 + 1) + 10
+    got, asked, gone = {}, set(), set()
+    while True:
+        miss = [r for r in range(end, start - 1, -1) if r not in got and r not in gone]
+        if not miss:
+            break
+        m = miss[0]
+        epsd = next((e for e in (max(1, m - 4), m) if e not in asked), None)
+        if epsd is None:
+            gone.add(m)
+            continue
+        if len(asked) >= cap:
+            raise RuntimeError(f'{start}~{end}회 수집에 조회 {cap}번을 넘겼다 '
+                               f'(받은 회차 {len(got)}개) - 엔드포인트 응답 형식 변경 의심.')
+        asked.add(epsd)
         for it in fetch_window(epsd):
             got[it['ltEpsd']] = it
-        epsd -= 10
         time.sleep(POLITE_SLEEP)
     return {k: v for k, v in got.items() if start <= k <= end}
 
@@ -191,6 +220,20 @@ def load_prize_rounds():
         return {int(r['회차']) for r in csv.DictReader(f)}
 
 
+# '총판매액'은 wholEpsdSumNtslAmt다. rlvtEpsdSumNtslAmt는 261회부터 판매액이 아니라
+# 1~5등 당첨금 총액(약 rnk1~5 인원 x 금액 합 - 이월 회차는 어긋남, 판매액의 약 절반)이고, 1~260회만 두 필드가
+# 같다 (2026-10-13 공식 API 전 구간 대조). 공식 당첨결과 페이지 735회
+# "총판매금액 : 77,488,209,000원"(web.archive.org 보관본)이 whol과 일치, rlvt는 그 절반.
+# 2026-10-13 이전에는 rlvt를 기록했다 — 기존 행은 --sales로 재기록한다.
+SALES_FIELD = 'wholEpsdSumNtslAmt'
+
+
+def prize_row(it):
+    return ([it['ltEpsd'], it.get('ltRflYmd', '')] +
+            [it.get(f'rnk{r}{k}') for r in range(1, 6) for k in ('WnNope', 'WnAmt')] +
+            [it.get(SALES_FIELD)])
+
+
 def append_prizes(items):
     new = not os.path.exists(PRIZE_PATH)
     ensure_newline(PRIZE_PATH)
@@ -199,10 +242,7 @@ def append_prizes(items):
         if new:
             w.writerow(PRIZE_HEADER)
         for it in sorted(items, key=lambda x: x['ltEpsd']):
-            w.writerow([it['ltEpsd'], it.get('ltRflYmd', '')] +
-                       [it.get(f'rnk{r}{k}') for r in range(1, 6)
-                        for k in ('WnNope', 'WnAmt')] +
-                       [it.get('rlvtEpsdSumNtslAmt')])
+            w.writerow(prize_row(it))
 
 
 # ── 채점 (look-ahead 없음) ───────────────────────────────────────
@@ -332,6 +372,71 @@ def do_prizes():
     items = [v for k, v in got.items() if k in set(need)]
     append_prizes(items)
     print(f'  {len(items)}회차 저장 -> {PRIZE_PATH}')
+    lost = sorted(set(need) - {it['ltEpsd'] for it in items})
+    if lost:
+        print(f'  [경고] 공식 응답에 없는 회차 {len(lost)}개: {lost[:20]}')
+
+
+def do_sales():
+    """
+    당첨금 CSV의 '총판매액' 열만 공식 API 값으로 다시 쓴다 (SALES_FIELD 주석 참조).
+    다른 열은 건드리지 않는다. 다시 받은 값이 기존과 다르면 보고만 한다 — 어느 쪽이
+    맞는지는 사람이 판단할 일이다. 공식 응답에 없는 회차는 기존 값을 그대로 둔다.
+    전체를 메모리에서 고친 뒤 임시 파일 -> os.replace로 한 번에 바꾼다(중단해도 반쪽 없음).
+
+    마지막 열을 덮어쓰므로 행 모양부터 확인한다. 열이 빠진 행은 5등금액이 판매액으로,
+    개행이 빠져 두 행이 붙은 행(이 CSV는 LF/CRLF가 섞여 있다)은 뒤 회차 판매액이 앞
+    회차 값으로 덮인다 - 둘 다 보고 없이 지나가므로 고치기 전에 멈춘다.
+    조회(약 2분) 동안 sync·수동입력이 행을 추가하면 교체 시 그 행이 사라진다.
+    수집과 겹치지 않을 때 돌릴 것.
+    """
+    if not os.path.exists(PRIZE_PATH):
+        print('당첨금 CSV가 없다. --prizes로 먼저 백필할 것.')
+        return
+    with open(PRIZE_PATH, encoding='utf-8', newline='') as f:
+        rows = list(csv.reader(f))
+    if not rows or rows[0] != PRIZE_HEADER:
+        raise RuntimeError(f'당첨금 CSV 헤더가 예상과 다르다: {rows[:1]}')
+    body = [r for r in rows[1:] if r]
+    if not body:
+        raise RuntimeError('당첨금 CSV에 헤더만 있다. --prizes로 먼저 백필할 것.')
+    bad = [i + 2 for i, r in enumerate(body) if len(r) != len(PRIZE_HEADER)]
+    if bad:
+        raise RuntimeError(f'열 개수가 {len(PRIZE_HEADER)}개가 아닌 행(파일 기준 줄): {bad[:10]}')
+    rounds = [int(r[0]) for r in body]
+    dup = sorted(r for r, c in Counter(rounds).items() if c > 1)
+    if dup:
+        raise RuntimeError(f'중복 회차: {dup[:10]}')
+    print(f'총판매액 재기록: {len(body)}회차 ({min(rounds)}~{max(rounds)}회) 공식값 조회 중')
+    got = fetch_rounds(min(rounds), max(rounds))
+    changed, lost, other = 0, [], []
+    for row in body:
+        it = got.get(int(row[0]))
+        if it is None or not it.get(SALES_FIELD):     # None·0 = 아직 집계 전으로 본다
+            lost.append(int(row[0]))
+            continue
+        fresh = ['' if v is None else str(v) for v in prize_row(it)]
+        if fresh[:-1] != row[:-1]:
+            other.append(int(row[0]))
+        if row[-1] != fresh[-1]:
+            row[-1] = fresh[-1]
+            changed += 1
+    tmp = PRIZE_PATH + '.tmp'
+    try:
+        with open(tmp, 'w', encoding='utf-8', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(PRIZE_HEADER)
+            w.writerows(body)
+        os.replace(tmp, PRIZE_PATH)
+    finally:
+        if os.path.exists(tmp):        # 교체 실패(대상 파일이 열려 있음 등) 시 잔여물 정리
+            os.remove(tmp)
+    print(f'  총판매액 {changed}회차 갱신, {len(body) - changed - len(lost)}회차 기존과 동일')
+    if lost:
+        print(f'  [경고] 공식 응답에 없어 그대로 둔 회차 {len(lost)}개: {lost[:20]}')
+    if other:
+        print(f'  [주의] 총판매액 외 열이 공식값과 다른 회차 {len(other)}개(수정 안 함): '
+              f'{other[:20]}')
 
 
 def sync(verbose=True):
@@ -360,6 +465,12 @@ def sync(verbose=True):
 
     say(f'공식 최신: {newest}회  ->  {newest-have}개 회차 신규 수집')
     got = fetch_rounds(have+1, newest)
+    # 중간 회차가 하나라도 빠지면 아무것도 쓰지 않는다. 뒤 회차를 먼저 쌓으면 CSV 최신
+    # 회차가 앞질러 가서, 다음 실행부터는 빠진 회차를 다시 찾지 않는다(영구 결번).
+    hole = [r for r in range(have+1, newest+1) if r not in got]
+    if hole:
+        raise RuntimeError(f'공식 응답에 {hole}회가 없다 (최신 {newest}회) — '
+                           f'중간을 건너뛰고 쌓지 않는다. 다음 실행에서 다시 시도한다.')
     have_prize = load_prize_rounds()
     added = []
     for r in sorted(got):
@@ -395,16 +506,17 @@ def do_update():
 
 
 def main():
-    args = set(sys.argv[1:])
+    args = sys.argv[1:]
+    modes = {'--rebuild': do_rebuild, '--prizes': do_prizes, '--sales': do_sales}
+    # 모르는 인자는 수집으로 흘려보내지 않는다. 과거에는 --help 같은 인자가 그대로
+    # 평상시 경로(공식 사이트 조회 + CSV 기록)를 실행했다.
+    if len(args) > 1 or (args and args[0] not in modes):
+        print(__doc__)
+        sys.exit(0 if args and args[0] in ('-h', '--help') else 2)
     print('='*66)
     print('  회차 누적 반영 파이프라인')
     print('='*66)
-    if '--rebuild' in args:
-        do_rebuild()
-    elif '--prizes' in args:
-        do_prizes()
-    else:
-        do_update()
+    modes.get(args[0] if args else None, do_update)()
 
 
 if __name__ == '__main__':

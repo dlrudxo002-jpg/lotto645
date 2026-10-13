@@ -14,6 +14,7 @@
 import csv, sys, json, os, random, urllib.request, urllib.error
 from datetime import datetime
 from collections import Counter, defaultdict
+from math import comb
 
 # ── 경로 ─────────────────────────────────────────────────────────
 BASE    = os.path.dirname(os.path.abspath(__file__))
@@ -26,6 +27,7 @@ os.makedirs(REPORTS, exist_ok=True)
 PRIMES  = {2,3,5,7,11,13,17,19,23,29,31,37,41,43}
 SQUARES = {1,4,9,16,25,36}
 DOUBLES = {11,22,33,44}
+N_GAMES = 10          # recommend 가 내는 게임 수 (history.json 채점 대상)
 CORNERS = {1,2,8,9, 6,7,13,14, 29,30,36,37, 34,35,41,42}
 TRIANGLES = [
     {1,2,3,8,9,10}, {4,5,6,7,11,12,13},
@@ -377,12 +379,20 @@ def cmd_recommend(args, data=None, save=False):
         pool.append(best_carry)
         pool.sort()
 
-    # ── 게임 생성 — 필터 통과 후 점수 상위 10개 ──────────────────
-    from itertools import combinations as icombs
-    pf, tf, ep, et = compute_pair_triple(data)
-    candidates = [list(c) for c in icombs(pool, 6) if passes(list(c))]
-    candidates.sort(key=lambda c: score_combo(c, scores, pf, tf, ep, et), reverse=True)
-    games = candidates[:10]
+    # ── 게임 생성 — 적중 우선 배치 (2026-10-13) ──────────────────
+    # 과거에는 풀 15개 안의 필터 통과 조합을 조합점수 순으로 잘라 상위 10개를 냈다.
+    # 그 10개는 서로 4~5개씩 겹쳐 같이 맞고 같이 틀렸다: 1246회 풀에서
+    # P(10게임 중 최소 1게임 5등 이상) 8.88% — 자동구매 10장(21.43%)의 절반도 안 된다.
+    # 지금은 45개 번호를 게임마다 고르게 나눠 쓰되 풀 번호를 더 자주 쓴다(23.01%).
+    # 기대 당첨 게임 수와 1등 확률은 어떤 배치에서도 같다 (optimizer.py 4-3절).
+    import optimizer as O
+    priority = (sorted(pool, key=lambda n: -scores[n]) +
+                sorted((n for n in range(1, 46) if n not in pool), key=lambda n: -scores[n]))
+    games, _, failed = O.spread_tickets(N_GAMES, priority, passes,
+                                        pinned=len(pool), seed=target_rnd)
+    games = [list(g) for g in games]
+    p_hit, p_hw = O.p_win_fast(games)
+    use = Counter(x for g in games for x in g)
 
     # ── 출력 ─────────────────────────────────────────────────────
     print(f"\n{'='*62}")
@@ -414,17 +424,24 @@ def cmd_recommend(args, data=None, save=False):
         reasons.append(zone_str)
         print(f"  {n:>4}번  {ratio:>7.2f}x  {waiting[n]:>5}회  {freq[n]:>7}회  {', '.join(reasons)}")
 
-    print(f"\n  {'#':>2}  {'번호':<36}  {'합':>4}  {'홀:짝':>5}  {'AC':>3}  {'이월':>4}")
-    print(f"  {'─'*60}")
+    in_pool = sorted({use[n] for n in pool})
+    others = sorted({use[n] for n in range(1, 46) if n not in pool})
+    print(f"\n  [추천 {len(games)}게임 — 적중 우선 배치]")
+    print(f"  {len(games)}게임에 걸쳐 풀 번호는 각 {'/'.join(map(str, in_pool))}회, "
+          f"나머지 번호는 각 {'/'.join(map(str, others))}회씩 나눠 씀 — 게임끼리 겹침 최소화")
+    print(f"  P(이 {len(games)}게임 중 최소 1게임 5등 이상) = {p_hit*100:.2f}%"
+          + (f" (±{p_hw*100:.2f}%p)" if p_hw else "")
+          + f"   [같은 장수 자동구매 {(1-(1-float(O.P_SINGLE_WIN))**len(games))*100:.2f}%]")
+    print(f"\n  {'#':>2}  {'번호':<36}  {'합':>4}  {'홀:짝':>5}  {'AC':>3}  {'풀':>3}  {'이월':>4}")
+    print(f"  {'─'*64}")
     for i, g in enumerate(games, 1):
         carry = sum(1 for x in g if x in prev_nums)
         print(f"  {i:>2}  {str(g):<36}  {sum(g):>4}  "
               f"{sum(1 for x in g if x%2==1)}:{sum(1 for x in g if x%2==0)}  "
-              f"{ac(g):>3}  {'있음' if carry else '─':>4}")
-
-    if not games:
-        print("  ⚠ 필터를 통과한 조합이 부족합니다. 후보풀을 확인하세요.")
-        return []
+              f"{ac(g):>3}  {sum(1 for x in g if x in pool):>3}  {'있음' if carry else '─':>4}")
+    if failed:
+        print(f"  [경고] {failed}게임은 다른 게임과 겹치지 않으면서 필터를 모두 만족하는 "
+              f"조합을 찾지 못했습니다. 필터 설정을 확인하세요.")
 
     # ── 휠링 (5등 보장) ───────────────────────────────────────────
     wheel = compute_wheel(pool, k=3)
@@ -432,6 +449,11 @@ def cmd_recommend(args, data=None, save=False):
     print(f"\n  {'─'*60}")
     print(f"  [🛡 5등 보장 휠링]  총 {len(wheel)}장  (필터 통과: {len(w_pass)}장)")
     print(f"  풀 내 3개↑ 당첨번호 포함 시 → 5등(3개 일치) 이상 1장 확정")
+    # 보장 조건 자체가 성립할 확률(초기하분포). 휠링은 그 안에서만 보장하므로
+    # 장수 대비 P(최소 1게임 당첨)는 위의 적중 우선 배치보다 낮다.
+    k_pool = len(pool)
+    p_cond = sum(comb(k_pool, j) * comb(45 - k_pool, 6 - j) for j in range(3, 7)) / comb(45, 6)
+    print(f"  (풀 {k_pool}개에 당첨번호가 3개 이상 들어올 확률 {p_cond*100:.2f}% — 그 경우에만 보장)")
     print(f"  {'─'*60}")
     print(f"  {'#':>2}  {'번호':<36}  {'합':>4}  {'홀:짝':>5}  {'AC':>3}  {'필터'}")
     print(f"  {'─'*60}")
@@ -459,6 +481,7 @@ def cmd_recommend(args, data=None, save=False):
         with open(path, 'w', encoding='utf-8') as f:
             f.write(f"{target_rnd}회차 추천번호\n생성:{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n")
             f.write(f"유력풀({len(pool)}개): {pool}\n\n")
+            f.write(f"적중 우선 배치 {len(games)}게임 — P(최소 1게임 5등 이상) {p_hit*100:.2f}%\n")
             for i,g in enumerate(games,1):
                 f.write(f"게임{i:02d}: {g}  합:{sum(g)}  AC:{ac(g)}\n")
             f.write(f"\n[5등 보장 휠링 {len(wheel)}장]\n")
