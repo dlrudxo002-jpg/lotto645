@@ -94,6 +94,12 @@ body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-
 .layout-hint { font-size: .74rem; color: var(--muted); margin-top: 8px; line-height: 1.5; }
 .hit-note { font-size: .8rem; color: var(--muted); line-height: 1.6; padding: 0 12px 12px; }
 .hit-note b { color: var(--text); font-variant-numeric: tabular-nums; }
+.rank-wrap { overflow-x: auto; margin: 4px 0 6px; }
+.rank-tbl { border-collapse: collapse; width: 100%; min-width: 280px; font-size: .78rem; }
+.rank-tbl th, .rank-tbl td { padding: 4px 8px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+.rank-tbl th { color: var(--muted); font-weight: 600; }
+.rank-theory { margin-top: 8px; }
+.rank-theory summary { cursor: pointer; color: var(--muted); }
 /* 선택하지 않은 번호: 테두리만 */
 .ball.out { background: transparent; color: var(--text); }
 .ball.out.b1  { box-shadow: inset 0 0 0 2px #e11d48; }
@@ -929,13 +935,63 @@ function fmtPct(p, hw) {
   return hw ? `${s} (±${(hw * 100).toFixed(1)}%p)` : s;
 }
 
+// 확률을 유효숫자 3자리 % 로 (1등처럼 아주 작은 값도 0.00% 로 뭉개지지 않게)
+function fmtSig(p) {
+  const v = p * 100;
+  if (v === 0) return '0%';
+  if (v >= 10) return v.toFixed(1) + '%';
+  if (v >= 1) return v.toFixed(2) + '%';
+  return v.toPrecision(3) + '%';
+}
+
+const RANK_LABEL = {1: '1등', 2: '2등 이상', 3: '3등 이상', 4: '4등 이상', 5: '5등 이상'};
+
+// 등수별 누적 확률 표. kind: exact 정확 / lower 하한 / upper 상한 / approx 추정(±)
+function rankTableHtml(data) {
+  const rows = data.ranks;
+  if (!rows || !rows.length) return '';
+  const kindTxt = (r) => {
+    if (r.kind === 'exact') return '정확';
+    if (r.kind === 'lower') return '이상 (하한)';
+    if (r.kind === 'upper') return '이하 (상한)';
+    return r.hw ? `추정 (±${(r.hw * 100).toFixed(1)}%p)` : '추정';
+  };
+  let h = '<div class="rank-wrap"><table class="rank-tbl"><thead><tr>' +
+          '<th>등수 (누적)</th><th>최소 1게임 해당 확률</th><th>표기</th></tr></thead><tbody>';
+  rows.forEach(r => {
+    h += `<tr><td>${RANK_LABEL[r.rank] || r.rank + '등'}</td>` +
+         `<td><b>${fmtSig(r.p)}</b></td><td>${kindTxt(r)}</td></tr>`;
+  });
+  h += '</tbody></table></div>';
+  h += '1등 확률은 게임 수 / 8,145,060 입니다. 어떤 배치로도 바뀌지 않습니다.';
+  if (data.p_method === 'mc' && rows.length > 1) {
+    h += '<br>5등 이상은 이 번호 조합에 대한 무작위 시뮬레이션 추정값입니다.';
+  }
+  return h;
+}
+
+// 게임 수별 구조 이론값 표 (서버가 계산해 내려준 값만 렌더 — 숫자를 여기 적지 않는다)
+function theoryTableHtml(data) {
+  const rows = data.theory;
+  if (!rows || !rows.length) return '';
+  let h = '<div class="rank-wrap"><table class="rank-tbl"><thead><tr>' +
+          '<th>게임 수</th><th>이 배치 구조</th><th>자동구매</th></tr></thead><tbody>';
+  rows.forEach(r => {
+    h += `<tr><td>${r.n}게임</td><td><b>${fmtSig(r.spread)}</b></td><td>${fmtSig(r.indep)}</td></tr>`;
+  });
+  h += '</tbody></table></div>' +
+       '5등 이상 확률의 구조 이론값입니다 (필터 적용 전). 필터에 맞추느라 일부 게임이 바뀌면 실제 값과 조금 다를 수 있습니다.';
+  return h;
+}
+
 // 결과 카드 상단 설명 줄: 이 게임들의 적중 확률과 번호 사용 횟수
 function renderHitNote(data) {
   const el = document.getElementById('hit-note');
   const n = data.games.length;
   const parts = [];
   if (data.p_win != null) {
-    parts.push(`이 ${n}게임 중 최소 1게임 5등 이상 <b>${fmtPct(data.p_win, data.p_hw)}</b>`);
+    const isExact = data.p_method === 'exact-table' || data.p_method === 'exact-dp';
+    parts.push(`이 ${n}게임 중 최소 1게임 5등 이상 <b>${isExact ? fmtPct(data.p_win) + ' (정확)' : fmtPct(data.p_win, data.p_hw)}</b>`);
     parts.push(`같은 장수 자동구매 ${fmtPct(data.p_indep)}`);
   }
   if (data.layout === 'spread45') {
@@ -961,6 +1017,10 @@ function renderHitNote(data) {
     html += '<br>배치 방식은 당첨 게임 수의 기대값과 1등 확률(게임당 1/8,145,060)을 바꾸지 않습니다. ' +
             '게임끼리 겹치는 번호를 줄여 "한 게임이라도 맞을" 확률을 높입니다.';
   }
+  const rt = rankTableHtml(data);
+  if (rt) html += '<br><br>' + rt;
+  const tt = theoryTableHtml(data);
+  if (tt) html += '<details class="rank-theory"><summary>게임 수별 이론값 보기</summary>' + tt + '</details>';
   el.innerHTML = html;
   el.hidden = !html;
 }

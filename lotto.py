@@ -388,10 +388,14 @@ def cmd_recommend(args, data=None, save=False):
     import optimizer as O
     priority = (sorted(pool, key=lambda n: -scores[n]) +
                 sorted((n for n in range(1, 46) if n not in pool), key=lambda n: -scores[n]))
-    games, _, failed = O.spread_tickets(N_GAMES, priority, passes,
-                                        pinned=len(pool), seed=target_rnd)
-    games = [list(g) for g in games]
-    p_hit, p_hw = O.p_win_fast(games)
+    info = O.spread_tickets_info(N_GAMES, priority, passes,
+                                 pinned=len(pool), seed=target_rnd)
+    failed = info['failed']
+    games = [list(g) for g in info['tickets']]
+    # 5등 이상은 한 번만 구해 등수별 줄에도 넘긴다 (패치 0 + 지문 일치면 표, 아니면 DP/MC)
+    exact_n = O.exact_from_info(info)
+    p5 = O.p_win_ex(games, exact_n=exact_n)
+    p_hit, p_hw = p5[0], p5[1]
     use = Counter(x for g in games for x in g)
 
     # ── 출력 ─────────────────────────────────────────────────────
@@ -432,6 +436,11 @@ def cmd_recommend(args, data=None, save=False):
     print(f"  P(이 {len(games)}게임 중 최소 1게임 5등 이상) = {p_hit*100:.2f}%"
           + (f" (±{p_hw*100:.2f}%p)" if p_hw else "")
           + f"   [같은 장수 자동구매 {(1-(1-float(O.P_SINGLE_WIN))**len(games))*100:.2f}%]")
+    # 등수별 누적 확률 (최소 1게임이 해당 등수 이상). 1등 확률은 게임 수/8,145,060 으로 배치와 무관.
+    kind_txt = {'exact': '정확', 'lower': '하한', 'upper': '상한', 'approx': '추정'}
+    print("  등수별 누적(최소 1게임이 그 등수 이상): " + "  ".join(
+        f"{r['rank']}등{'' if r['rank'] == 1 else '↑'} {r['p']*100:.4g}%({kind_txt[r['kind']]})"
+        for r in O.rank_probs(games, exact_n=exact_n, p5=p5)['rows']))
     print(f"\n  {'#':>2}  {'번호':<36}  {'합':>4}  {'홀:짝':>5}  {'AC':>3}  {'풀':>3}  {'이월':>4}")
     print(f"  {'─'*64}")
     for i, g in enumerate(games, 1):

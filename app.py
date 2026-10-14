@@ -468,6 +468,7 @@ def api_generate():
 
     patched = failed = 0
     total_pass = None
+    exact_n = None
     if layout == 'spread45':
         # 통과 조합이 거의 없는 조건이면 탐색이 상한까지 헛돈다 — 미리 알린다
         if not any_combo_passes(ok):
@@ -475,10 +476,13 @@ def api_generate():
                                      '조합이 하나도 없습니다. 허용 값을 넓히거나 필터를 끄세요.'}), 400
         priority = (sorted(pool, key=lambda x: -sc[x]) +
                     sorted((x for x in range(1, 46) if x not in pool), key=lambda x: -sc[x]))
-        tickets, patched, failed = O.spread_tickets(count, priority, ok, pinned=len(pool),
-                                                    seed=data[-1]['회차'] + 1,
-                                                    max_evals=SPREAD_MAX_EVALS)
+        info = O.spread_tickets_info(count, priority, ok, pinned=len(pool),
+                                     seed=data[-1]['회차'] + 1,
+                                     max_evals=SPREAD_MAX_EVALS)
+        tickets, patched, failed = info['tickets'], info['patched'], info['failed']
         games = [list(t) for t in tickets]
+        # 패치·실패가 0이고 구조 지문이 표와 같을 때만 사전계산 정확값을 쓴다 (optimizer.exact_from_info)
+        exact_n = O.exact_from_info(info, layout)
     else:
         # 필터 통과 조합 생성
         results = [c for c in icombs(pool, 6) if ok(c)]
@@ -496,10 +500,16 @@ def api_generate():
             games = [list(c) for c in O.pick_spread(scored, count)]
 
     # P(최소 1게임 5등 이상) — 표시용. 전체추출처럼 게임이 많으면 계산하지 않는다.
-    p_win = p_hw = p_indep = None
+    p_win = p_hw = p_indep = p_method = ranks = None
     if 0 < len(games) <= MAX_SPREAD_GAMES:
-        p_win, p_hw = O.p_win_fast(games, mc_iters=50_000)
+        p_win, p_hw, p_method = O.p_win_ex(games, mc_iters=50_000, exact_n=exact_n)
         p_indep = 1 - (1 - float(O.P_SINGLE_WIN)) ** len(games)   # P_SINGLE_WIN 은 Fraction
+        # 등수별 누적 확률 표. 풀 안 배치는 게임끼리 5개씩 겹쳐 폐형식이 성립하지 않으므로 1등 값만 낸다.
+        rp = O.rank_probs(games, exact_n=exact_n, p5=(p_win, p_hw, p_method))
+        if layout == 'spread45' and rp['max_inter'] <= 3:
+            ranks = rp['rows']
+        else:
+            ranks = rp['rows'][:1]
     use = Counter(x for g in games for x in g)
     pool_set = set(pool)
 
@@ -529,6 +539,9 @@ def api_generate():
         'p_win':      p_win,
         'p_hw':       p_hw,
         'p_indep':    p_indep,
+        'p_method':   p_method,     # 'exact-table' | 'exact-dp' | 'mc' — 배포 후 정확 경로가 켜졌는지 확인용
+        'ranks':      ranks,        # 등수별 "최소 1게임 그 등수 이상" 확률(누적) 표
+        'theory':     O.struct_theory_rows() if layout == 'spread45' else None,
         'patched':    patched,
         'failed':     failed,
         'pool_uses':  sorted({use[x] for x in pool}),

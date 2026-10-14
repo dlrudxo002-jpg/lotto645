@@ -30,8 +30,10 @@ optimizer.py — 당첨 확률 최대화 엔진 (2026-09-13 신설)
 실행: python -X utf8 optimizer.py
 """
 import functools
+import hashlib
 import math
 import random
+import sys
 from fractions import Fraction
 from itertools import combinations
 
@@ -377,6 +379,12 @@ def spread_structure(n, seed=SEED, sweeps=6000):
     return tuple(tuple(sorted(x)) for x in T), tuple(uses)
 
 
+def struct_fingerprint(slots):
+    """구조(slots 전체)의 지문. 게임 내 순서를 정규화한 튜플의 sha256 앞 16자.
+    uses/교집합 히스토그램이 아니라 구조 전체를 해시하므로 구조가 한 칸만 달라도 달라진다."""
+    return hashlib.sha256(repr(tuple(tuple(sorted(g)) for g in slots)).encode()).hexdigest()[:16]
+
+
 class _Evals:
     """
     필터 평가기. 같은 조합은 한 번만 평가하고(캐시) 실제 평가 횟수를 센다.
@@ -454,6 +462,12 @@ LAMBDA_PIN = 0.5    # 제약 해제 뒤 풀 번호 강등 1건의 벌점 (필터
 
 
 def spread_tickets(n, priority, ok, pinned=0, seed=SEED, iters=20_000, max_evals=None):
+    """기존 호출부용 3-튜플 래퍼. 본체와 설명은 spread_tickets_info."""
+    r = spread_tickets_info(n, priority, ok, pinned=pinned, seed=seed, iters=iters, max_evals=max_evals)
+    return r['tickets'], r['patched'], r['failed']
+
+
+def spread_tickets_info(n, priority, ok, pinned=0, seed=SEED, iters=20_000, max_evals=None):
     """
     적중 우선 배치 n게임. spread_structure 의 구조에 번호 이름을 붙인다.
       priority  : 1~45 전체를 우선순위 순으로 (앞일수록 많이 쓰이는 슬롯에 배정)
@@ -462,7 +476,8 @@ def spread_tickets(n, priority, ok, pinned=0, seed=SEED, iters=20_000, max_evals
       max_evals : 필터 평가 횟수 상한(같은 조합은 1회로 센다). None이면 iters만 본다.
                   웹 요청 시간 상한용. 시간이 아니라 횟수로 끊으므로 결과는 서버 속도와
                   무관하게 결정적이다. 약 2/3을 이름 붙이기에, 나머지를 패치에 쓴다.
-    반환: (게임 목록, 패치한 게임 수, 끝내 못 고친 게임 수). 마지막 값은 0이 정상이다.
+    반환: dict  tickets(게임 목록) / patched(패치한 게임 수) / failed(끝내 못 고친 게임 수,
+          0이 정상) / n / fp(사용한 구조의 지문 — struct_fingerprint, STRUCT_EXACT 대조용).
 
     번호 이름 맞바꾸기는 구조를 바꾸지 않으므로 P는 탐색 내내 같다. 앞 절반은 풀 번호가
     사용 횟수가 낮은 자리로 밀려나지 않게 묶어 두고, 그래도 못 풀면 뒤 절반에서는 밀려남을
@@ -471,6 +486,7 @@ def spread_tickets(n, priority, ok, pinned=0, seed=SEED, iters=20_000, max_evals
     if sorted(priority) != list(range(1, N_BALL + 1)):
         raise ValueError('priority 는 1~45 를 정확히 한 번씩 담아야 한다')
     slots, uses = spread_structure(n)
+    fp = struct_fingerprint(slots)
     rng = random.Random(seed)
     of_slot = [[] for _ in range(N_BALL)]
     for g, ss in enumerate(slots):
@@ -542,7 +558,8 @@ def spread_tickets(n, priority, ok, pinned=0, seed=SEED, iters=20_000, max_evals
             lab[s], lab[t] = lab[t], lab[s]
 
     out = [tuple(sorted(lab[s] for s in ss)) for ss in slots]
-    return _patch(out, check, random.Random(seed + 1), pin)
+    games, fixed, failed = _patch(out, check, random.Random(seed + 1), pin)
+    return {'tickets': games, 'patched': fixed, 'failed': failed, 'n': n, 'fp': fp}
 
 
 def pick_spread(cands, n):
@@ -568,19 +585,194 @@ def pick_spread(cands, n):
     return out
 
 
-def p_win_fast(tickets, mc_iters=100_000, seed=SEED):
+# ── 사전계산 정확값 표 (2026-10-14) ─────────────────────────────────────
+# spread_structure(n) 이 내는 게임 구조에 대해 C(45,6) 추첨 전수 열거로 센 정수다.
+#   STRUCT_EXACT[n] = (구조 지문, no3, no4)
+#     no3 : 어느 게임도 3개 이상 맞지 않는 추첨 수  -> P(5등 이상) = 1 - no3/TOTAL
+#     no4 : 어느 게임도 4개 이상 맞지 않는 추첨 수  -> P(4등 이상) = 1 - no4/TOTAL
+# 런타임 정확계산은 11게임 0.9초, 12게임 4.6초, 14게임 이상은 상태 폭발이라 못 쓴다. 그래서 표다.
+# 번호 이름 맞바꾸기(spread_tickets 의 lab 순열)는 구조를 바꾸지 않으므로 패치가 없으면
+# 실제 게임의 확률은 이 표와 같다. 패치(_patch)가 한 게임이라도 고쳤으면 구조가 깨져 쓰지 못한다.
+#
+# 언제 재생성하는가: spread_structure, SEED, sweeps, 구조 생성 난수 규칙 등 "구조가 달라질 수 있는"
+# 로직을 바꿨을 때. 재생성: python -X utf8 research/20261014/gen_struct_table.py --write
+# 안 하고 두면? 런타임 지문이 표와 달라져 정확값 대신 MC로 자동 폴백한다(틀린 정확값이 나오지는
+# 않는다). 같은 이유로 Python 버전 차이로 random 이 다른 구조를 내도 안전하다.
+# --- STRUCT_EXACT BEGIN ---
+STRUCT_EXACT = {
+    1: ('a44e487ac2f5cdaa', 7950930, 8133710),
+    2: ('6bbe5a9434535de3', 7757200, 8122360),
+    3: ('e2c529d56060b507', 7563870, 8111010),
+    4: ('093b0e07a5eb9011', 7370940, 8099660),
+    5: ('13956a5d9a091354', 7178410, 8088310),
+    6: ('0098e0623077e6c5', 6986280, 8076960),
+    7: ('fa77d09c00ab79e1', 6794550, 8065610),
+    8: ('44a7ae62d6083a89', 6613120, 8054260),
+    9: ('3280ba361ee38ffe', 6441926, 8042910),
+    10: ('3772f908a239bbd8', 6271132, 8031560),
+    11: ('db22f1104475bfce', 6100674, 8020210),
+    12: ('41c97f56f3b81ada', 5930488, 8008860),
+    13: ('0dbeaa4eae815368', 5760510, 7997510),
+    14: ('41fd0a6c7b571bfd', 5590744, 7986160),
+    15: ('f2aa5dfbdc3e3717', 5421947, 7974810),
+    16: ('5911edfd06e0da54', 5272080, 7963460),
+    17: ('697c195fb1dfdc9f', 5122926, 7952110),
+    18: ('485133d21f797868', 4973475, 7940760),
+    19: ('981132f28198ca60', 4824431, 7929410),
+    20: ('16c461f9b28238f0', 4675968, 7918060),
+    21: ('4941dd6cbcc4b44b', 4527465, 7906710),
+    22: ('79b70e25fcd9c661', 4379300, 7895360),
+    23: ('b70791e3a2e87c76', 4240617, 7884010),
+    24: ('f0725fab52bcef71', 4111337, 7872660),
+    25: ('3e2c1f3a105b349d', 3981970, 7861310),
+    26: ('522e9ed92955127a', 3853486, 7849960),
+    27: ('a5edad9697465fb2', 3725106, 7838610),
+    28: ('4e69cc6d0d5d7bd4', 3595130, 7827260),
+    29: ('d4fa29a3f20d8f00', 3466987, 7815910),
+    30: ('182e8649e790c90c', 3339361, 7804560),
+    31: ('731d8b6250d45e31', 3233075, 7793246),
+    32: ('be220c14dfc2ff5f', 3117296, 7781860),
+    33: ('909d6c5e25826624', 3006528, 7770510),
+    34: ('8f44e3e0bf6dbd7f', 2915260, 7759304),
+    35: ('62d6cc884770b568', 2800334, 7747918),
+    36: ('98f87e712bff3b77', 2695629, 7736604),
+    37: ('1f429a76a3198eea', 2596278, 7725326),
+    38: ('b14405fa8f12addc', 2497149, 7714012),
+    39: ('538ab323be5cd8dc', 2396188, 7702590),
+    40: ('999fea0e43a87090', 2305604, 7691276),
+    41: ('f6d1771bb3e2ec8f', 2245762, 7680214),
+    42: ('04ae7201fd9ba573', 2161595, 7668936),
+    43: ('1a9174eaacc364cf', 2062703, 7657550),
+    44: ('0909327b954a57d2', 1981917, 7646308),
+    45: ('40ad50c2f4094b0c', 1918501, 7635210),
+    46: ('5e5f93e7f9270f71', 1822887, 7623716),
+    47: ('adf90344de5ea000', 1783341, 7612762),
+    48: ('f0480228449b33d5', 1709446, 7601448),
+    49: ('5631491662555a61', 1621067, 7589990),
+    50: ('9052015a75b409a7', 1548414, 7578712),
+}
+# --- STRUCT_EXACT END ---
+
+
+_FP_WARNED = set()   # 지문 불일치를 알린 게임 수 (요청마다 같은 줄이 쌓이지 않게)
+
+
+def exact_from_info(info, layout='spread45'):
     """
-    화면 표시용 P(최소 1게임 5등 이상). (확률, 95% 반폭) — 정확계산이면 반폭 0.
-    게임 10개 이하는 정확계산, 그 이상은 몬테카를로(기본 10만 회, 반폭 약 0.3%p).
+    spread_tickets_info 결과가 표의 정확값을 쓸 수 있으면 (no3, no4), 아니면 None.
+    조건(모두): layout == spread45, patched == 0, failed == 0, n 이 표에 있음, 지문 일치.
+    지문 불일치는 게임 수별로 처음 한 번만 stderr 에 알린다.
+    """
+    if layout != 'spread45' or not info or info.get('patched') or info.get('failed'):
+        return None
+    ent = STRUCT_EXACT.get(info.get('n'))
+    if ent is None or len(info.get('tickets', ())) != info['n']:
+        return None
+    if ent[0] != info.get('fp'):
+        if info['n'] not in _FP_WARNED:
+            _FP_WARNED.add(info['n'])
+            print(f"[optimizer] STRUCT_EXACT 지문 불일치 n={info['n']} (표 {ent[0]} / 실행 {info.get('fp')}) "
+                  f"-> MC 로 대체. gen_struct_table.py 재생성 필요", file=sys.stderr)
+        return None
+    return ent[1], ent[2]
+
+
+def p_win_ex(tickets, mc_iters=100_000, seed=SEED, exact_n=None):
+    """
+    화면 표시용 P(최소 1게임 5등 이상). (확률, 95% 반폭, 방법) — 방법은
+      'exact-table' : STRUCT_EXACT 의 no3 로 계산 (exact_n=(no3, no4) 가 주어졌을 때)
+      'exact-dp'    : 게임 10개 이하 조합론적 정확계산
+      'mc'          : 몬테카를로(기본 10만 회, 반폭 약 0.3%p)
+    반환값은 전부 float/str (Fraction 금지 — jsonify 에서 TypeError).
     """
     if not tickets:
-        return 0.0, 0.0
+        return 0.0, 0.0, 'exact-dp'
+    if exact_n is not None:
+        return float(1 - exact_n[0] / TOTAL), 0.0, 'exact-table'
     if len(tickets) <= 10:
         try:
-            return float(1 - p_no_win_exact(tickets)), 0.0
+            return float(1 - p_no_win_exact(tickets)), 0.0, 'exact-dp'
         except MemoryError:
             pass
-    return p_win_mc_fixed(tickets, iters=mc_iters, seed=seed)
+    p, hw = p_win_mc_fixed(tickets, iters=mc_iters, seed=seed)
+    return p, hw, 'mc'
+
+
+def p_win_fast(tickets, mc_iters=100_000, seed=SEED, exact_n=None):
+    """p_win_ex 에서 방법을 뗀 (확률, 반폭). 기존 호출부 호환."""
+    p, hw, _ = p_win_ex(tickets, mc_iters, seed, exact_n)
+    return p, hw
+
+
+# 두 게임의 교집합이 s(0..5)일 때, 둘 다 4개 이상 맞는 추첨 수.
+# (research/20261014/v1_formulas.py 에서 전수 열거로 확인)
+PAIR_BOTH4 = (0, 0, 36, 369, 1434, 4320)
+# 한 게임이 k등 이상이 되는 추첨 수(누적): 1등 1 / 2등 이상 7(보너스 포함) / 3등 이상 235 /
+# 4등 이상 11,350 / 5등 이상 194,130
+CUM_WAYS = {1: 1, 2: 7, 3: 235, 4: 11_350, 5: 194_130}
+
+
+def rank_probs(games, exact_n=None, p5=None, mc_iters=50_000, seed=SEED):
+    """
+    등수별 "최소 1게임이 그 등수 이상" 확률(누적 정의). float/int/str 만 담는다.
+    games: 게임 목록. 중복 게임은 하나로 센다. exact_n: exact_from_info() 결과 또는 None.
+    p5: 5등 이상 (확률, 반폭, 방법)을 이미 구했으면 넘긴다(재계산 방지).
+
+    반환 {'n', 'n_distinct', 'max_inter', 'rows': [...]} — rows 항목:
+      rank(1~5) / p / kind('exact' 정확 | 'lower' 하한 | 'upper' 상한 | 'approx' 근사)
+      / hw(근사일 때 95% 반폭, 아니면 0) / method(근거 한 줄)
+    정확 조건과 근거
+      1등     : 서로 다른 게임 수 / TOTAL — 항상 정확.
+      2등 이상: 7n/TOTAL. 두 게임이 모두 2등 이상이려면 교집합 >= 5 필요 -> 최대 <= 4 이면 서로소.
+      3등 이상: 235n/TOTAL. 두 게임이 모두 5개 이상 맞으려면 교집합 >= 4 필요 -> 최대 <= 3 이면 서로소.
+      4등 이상: 표 정확값(1 - no4/TOTAL). 없으면 최대 교집합 <= 1 이면 11,350n/TOTAL 이 정확,
+                아니면 본페로니 하한 (11,350n - sum_쌍 PAIR_BOTH4[교집합]) / TOTAL.
+      5등 이상: 표 정확값(1 - no3/TOTAL). 없으면 p5(정확계산 또는 MC).
+    """
+    uniq, seen = [], set()
+    for g in games:
+        k = tuple(sorted(g))
+        if k not in seen:
+            seen.add(k)
+            uniq.append(k)
+    nd = len(uniq)
+    sets = [set(g) for g in uniq]
+    inter = [len(sets[i] & sets[j]) for i in range(nd) for j in range(i + 1, nd)]
+    mx = max(inter) if inter else 0
+
+    def row(rank, p, kind, method, hw=0.0):
+        return {'rank': rank, 'p': float(p), 'kind': kind, 'hw': float(hw), 'method': method}
+
+    rows = [row(1, nd / TOTAL, 'exact', 'n/C(45,6)')]
+    for rank, lim in ((2, 4), (3, 3)):
+        p = CUM_WAYS[rank] * nd / TOTAL
+        if mx <= lim:
+            rows.append(row(rank, p, 'exact', f'disjoint(max inter {mx}<={lim})'))
+        else:
+            rows.append(row(rank, p, 'upper', f'union bound(max inter {mx}>{lim})'))
+    if exact_n is not None:
+        rows.append(row(4, 1 - exact_n[1] / TOTAL, 'exact', 'exact-table'))
+    elif mx <= 1:
+        rows.append(row(4, CUM_WAYS[4] * nd / TOTAL, 'exact', f'disjoint(max inter {mx}<=1)'))
+    else:
+        pair = sum(PAIR_BOTH4[s] for s in inter)
+        rows.append(row(4, (CUM_WAYS[4] * nd - pair) / TOTAL, 'lower', 'bonferroni'))
+    if p5 is None:
+        p5 = p_win_ex(games, mc_iters=mc_iters, seed=seed, exact_n=exact_n)
+    p, hw, method = p5
+    rows.append(row(5, p, 'approx' if method == 'mc' else 'exact', method, hw))
+    return {'n': len(games), 'n_distinct': nd, 'max_inter': mx, 'rows': rows}
+
+
+def struct_theory_rows(ns=(5, 10, 20, 30)):
+    """
+    45개 분산 구조의 "필터·패치 전" 이론값(5등 이상)과 같은 장수 자동구매(독립) 값. STRUCT_EXACT 에서 계산.
+    40게임 이상은 넣지 않는다 — 웹 기본 필터에서도 패치가 생겨(40게임 1건, 45게임 3건, 50게임 8건)
+    실제 값이 구조 이론값과 달라진다. 좁은 필터에서는 30게임 이하도 패치가 생길 수 있다.
+    """
+    p1 = CUM_WAYS[5] / TOTAL
+    return [{'n': n, 'spread': float(1 - STRUCT_EXACT[n][1] / TOTAL),
+             'indep': float(1 - (1 - p1) ** n)} for n in ns if n in STRUCT_EXACT]
 
 
 # ═══ 5. 보장 분석 (확률이 아니라 확정) ═══════════════════════════
